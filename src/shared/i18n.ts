@@ -1,0 +1,347 @@
+import type {
+  PromptSourceType,
+  PromptStatus,
+  PrompterCommandId,
+  PrompterSettings,
+  PrompterView
+} from './models';
+
+type Locale = PrompterSettings['language'];
+
+export function isUncategorizedGroupName(groupName: string): boolean {
+  return groupName === '未分类' || groupName === 'Uncategorized';
+}
+
+const shortcutLabels = {
+  'zh-CN': {
+    'prompter.open': 'Open Prompter',
+    'prompter.importSelection': 'Import Selection',
+    'prompter.importResource': 'Import Resource',
+    'prompter.importTerminalSelection': 'Import Terminal Selection'
+  },
+  en: {
+    'prompter.open': 'Open Prompter',
+    'prompter.importSelection': 'Import Selection',
+    'prompter.importResource': 'Import Resource',
+    'prompter.importTerminalSelection': 'Import Terminal Selection'
+  }
+} satisfies Record<Locale, Record<PrompterCommandId, string>>;
+
+const text = {
+  'zh-CN': {
+    sidebarAriaLabel: 'Prompter 分区',
+    sidebarLabels: {
+      workspace: '工作台',
+      history: '历史',
+      shortcuts: '快捷键',
+      settings: '设置'
+    } satisfies Record<PrompterView, string>,
+    workspace: {
+      composerAriaLabel: 'Prompt 编辑区',
+      titleToggle: '标题',
+      titleToggleOpenTitle: '关闭标题',
+      titleToggleClosedTitle: '添加标题',
+      newDraftTitle: '新建（当前内容将存入未使用）',
+      clearPromptTitle: '清空当前 prompt',
+      titleInputAriaLabel: '标题',
+      titlePlaceholder: '标题（可选）',
+      promptInputAriaLabel: 'Prompt',
+      promptPlaceholder: '使用 Markdown 编写你的 prompt...',
+      submitButton: '确认',
+      promptStatusHeading: 'Prompt 状态区',
+      promptStatusLanesSubtitle: '按泳道管理今日 prompt 与进行中的任务。',
+      promptStatusListSubtitle: '显示全部 prompt，按优先级和最新时间排序。',
+      promptStatusViewAriaLabel: 'Prompt 状态区视图',
+      boardView: '三泳道',
+      listView: '列表视图',
+      listViewAriaLabel: 'Prompt 列表视图',
+      trashZoneIdle: '拖拽至此删除',
+      trashZoneOver: '松开以删除',
+      cardCount: (count: number) => `${count} 张卡片`,
+      emptyLane: '暂无卡片'
+    },
+    laneLabels: {
+      unused: '未使用',
+      active: '使用中',
+      completed: '已完成'
+    } satisfies Record<PromptStatus, string>,
+    card: {
+      copied: '已复制',
+      deletePrompt: '删除 prompt',
+      createdAt: '创建于',
+      awaitingConfirmation: '已完成，待确认',
+      awaitingConfirmationAction: '已完成，待确认，点击移入已完成',
+      expandPrompt: '展开完整 prompt',
+      collapsePrompt: '收起完整 prompt',
+      renameGroup: 'Rename group',
+      renameGroupTitle: '点击修改分组',
+      groupNameInputAriaLabel: 'Group name',
+      jumpToSource: (source: string) => `在 ${source} 中打开`
+    },
+    sourceLabels: {
+      'claude-code': 'Claude Code',
+      codex: 'Codex',
+      'roo-code': 'Roo Code'
+    } satisfies Partial<Record<PromptSourceType, string>>,
+    settings: {
+      generalHeading: '通用',
+      generalSubtitle: '切换界面语言、主题和默认导入方式。',
+      language: '语言',
+      theme: '主题',
+      themeSystem: '跟随系统',
+      themeLight: '浅色',
+      themeDark: '深色',
+      themeCustom: '自定义',
+      defaultImportMode: '默认导入方式',
+      relativePath: '相对路径',
+      absolutePath: '绝对路径',
+      notificationsHeading: '通知',
+      notificationsSubtitle: '控制 prompt 生命周期通知和完成提示音。',
+      notifyOnFinish: 'Prompt 完成时通知',
+      notifyOnPause: 'Prompt 暂停时通知',
+      completionTone: '完成提示音',
+      toneOff: '关闭',
+      toneSoftBell: '轻提示音',
+      toneChime: '钟声',
+      toneDing: '叮声',
+      toneCustom: '自定义文件',
+      customTonePath: '自定义提示音路径',
+      storageHeading: '存储与日志',
+      storageSubtitle: '配置 Prompter 数据目录和 coding agent 日志目录。',
+      dataDirectory: '数据目录',
+      whenSwitchingDirectories: '切换目录时',
+      startWithEmptyDirectory: '使用空目录开始',
+      migrateExistingData: '迁移现有数据',
+      applyDataDirectory: '应用数据目录',
+      enableLogs: (source: string) => `启用 ${source} 日志`,
+      logPath: (source: string) => `${source} 日志路径`,
+      cacheHeading: '缓存',
+      cacheSubtitle: '清除当前工作区的缓存 prompt 数据和导入状态。',
+      clearCache: '清空缓存'
+    },
+    history: {
+      empty: '还没有 prompt 活动记录。',
+      selectedDayDetails: '选中日期详情',
+      readOnlySubtitle: '只读展示所选日期记录下来的 prompt 卡片。',
+      filterSubtitle: (status: string) => `仅显示「${status}」— 点击标签取消筛选`,
+      noPromptsForDay: '当天没有记录任何 prompt。',
+      noPromptsForStatus: (status: string) => `当天没有「${status}」的 prompts。`,
+      activityHeading: '活跃度',
+      activityDrilldown: (month: string, year: number) => `${month} ${year}`,
+      heatmapAriaLabel: 'Prompt 活动热力图',
+      previousYear: '上一年',
+      nextYear: '下一年',
+      less: '少',
+      more: '多',
+      backToYearView: '返回年视图',
+      tooltipTotal: (total: number) => `总数: ${total}`,
+      tooltipUnused: (count: number) => `未使用: ${count}`,
+      tooltipCompleted: (count: number) => `已完成: ${count}`,
+      copyContent: '复制内容',
+      clickToExpand: '点击展开',
+      clickToCollapse: '点击收起',
+      itemsCount: (count: number) => `${count} 条`,
+      statusCount: (status: string, count: number) => `${status} ${count}`
+    },
+    shortcuts: {
+      heading: '快捷键',
+      subtitle: '查看并调整 Prompter 的快捷键绑定。',
+      tableAriaLabel: 'Prompter 快捷键',
+      commandColumn: '命令',
+      shortcutColumn: '快捷键',
+      unassigned: '未分配',
+      listening: '监听中...',
+      saving: '保存中...',
+      edit: '编辑',
+      reset: '恢复',
+      editAriaLabel: (label: string) => `编辑 ${label} 快捷键`,
+      savingAriaLabel: (label: string) => `正在保存 ${label} 快捷键…`,
+      resetAriaLabel: (label: string) => `恢复默认 ${label} 快捷键`,
+      saved: (label: string) => `${label} 快捷键已保存。`,
+      saveFailed: '保存快捷键失败。',
+      conflictOpen: 'Open Prompter 不能和导入类命令使用同一个快捷键。',
+      conflictWithOpen: (label: string) => `${label} 与 Open Prompter 冲突。`
+    },
+    host: {
+      viewAction: '查看',
+      notifications: {
+        promptAutoCompleted: (title: string) => `Prompt 已自动完成: ${title}...`,
+        promptCompleted: (title: string) => `Prompt 已完成: ${title}...`,
+        promptCompletedGeneric: 'Prompt 已完成',
+        newRunningPrompt: (title: string) => `发现新的运行中 prompt: ${title}...`
+      },
+      errors: {
+        openPanelFailed: 'Prompter: 打开面板失败，详情请查看输出面板',
+        importSelectionFailed: 'Prompter: 导入选区失败，详情请查看输出面板',
+        activateFailed: 'Prompter 扩展激活失败，详情请查看 "输出" 面板 → Prompter',
+        jumpToSourceFailed: (sourceType: string) => `无法跳转到 ${sourceType} 会话`,
+        shortcutUnavailable: '当前面板不支持修改快捷键',
+        shortcutRollbackFailed: (message?: string) =>
+          message ? `回滚 Prompter 快捷键失败: ${message}` : '回滚 Prompter 快捷键失败',
+        shortcutApplyFailed: (message?: string) => message ?? '应用 Prompter 快捷键失败'
+      }
+    }
+  },
+  en: {
+    sidebarAriaLabel: 'Prompter sections',
+    sidebarLabels: {
+      workspace: 'Workspace',
+      history: 'History',
+      shortcuts: 'Shortcuts',
+      settings: 'Settings'
+    } satisfies Record<PrompterView, string>,
+    workspace: {
+      composerAriaLabel: 'Prompt composer',
+      titleToggle: 'Title',
+      titleToggleOpenTitle: 'Hide title',
+      titleToggleClosedTitle: 'Add title',
+      newDraftTitle: 'New prompt (current content will be saved to Unused)',
+      clearPromptTitle: 'Clear current prompt',
+      titleInputAriaLabel: 'Title',
+      titlePlaceholder: 'Title (optional)',
+      promptInputAriaLabel: 'Prompt',
+      promptPlaceholder: 'Write your prompt in Markdown...',
+      submitButton: 'Confirm',
+      promptStatusHeading: 'Prompt Status',
+      promptStatusLanesSubtitle: "Manage today's prompts and in-progress work by lane.",
+      promptStatusListSubtitle: 'Show all prompts sorted by priority and most recent activity.',
+      promptStatusViewAriaLabel: 'Prompt status views',
+      boardView: 'Board',
+      listView: 'List',
+      listViewAriaLabel: 'Prompt list view',
+      trashZoneIdle: 'Drag here to delete',
+      trashZoneOver: 'Release to delete',
+      cardCount: (count: number) => `${count} cards`,
+      emptyLane: 'No cards yet'
+    },
+    laneLabels: {
+      unused: 'Unused',
+      active: 'In Progress',
+      completed: 'Completed'
+    } satisfies Record<PromptStatus, string>,
+    card: {
+      copied: 'Copied',
+      deletePrompt: 'Delete prompt',
+      createdAt: 'Created',
+      awaitingConfirmation: 'Completed, awaiting confirmation',
+      awaitingConfirmationAction: 'Completed, awaiting confirmation. Move to completed.',
+      expandPrompt: 'Expand full prompt',
+      collapsePrompt: 'Collapse full prompt',
+      renameGroup: 'Rename group',
+      renameGroupTitle: 'Rename this group',
+      groupNameInputAriaLabel: 'Group name',
+      jumpToSource: (source: string) => `Open in ${source}`
+    },
+    sourceLabels: {
+      'claude-code': 'Claude Code',
+      codex: 'Codex',
+      'roo-code': 'Roo Code'
+    } satisfies Partial<Record<PromptSourceType, string>>,
+    settings: {
+      generalHeading: 'General',
+      generalSubtitle: 'Choose the interface language, theme, and default import behavior.',
+      language: 'Language',
+      theme: 'Theme',
+      themeSystem: 'Follow system',
+      themeLight: 'Light',
+      themeDark: 'Dark',
+      themeCustom: 'Custom',
+      defaultImportMode: 'Default import mode',
+      relativePath: 'Relative path',
+      absolutePath: 'Absolute path',
+      notificationsHeading: 'Notifications',
+      notificationsSubtitle: 'Control prompt lifecycle alerts and the completion sound.',
+      notifyOnFinish: 'Notify when a prompt finishes',
+      notifyOnPause: 'Notify when a prompt pauses',
+      completionTone: 'Completion tone',
+      toneOff: 'Off',
+      toneSoftBell: 'Soft bell',
+      toneChime: 'Chime',
+      toneDing: 'Ding',
+      toneCustom: 'Custom file',
+      customTonePath: 'Custom tone path',
+      storageHeading: 'Storage & logs',
+      storageSubtitle: 'Configure where Prompter stores data and where coding agent logs are read from.',
+      dataDirectory: 'Data directory',
+      whenSwitchingDirectories: 'When switching directories',
+      startWithEmptyDirectory: 'Start with empty directory',
+      migrateExistingData: 'Migrate existing data',
+      applyDataDirectory: 'Apply data directory',
+      enableLogs: (source: string) => `Enable ${source} logs`,
+      logPath: (source: string) => `${source} log path`,
+      cacheHeading: 'Cache',
+      cacheSubtitle: 'Remove cached prompt data and imported state from the local workspace.',
+      clearCache: 'Clear cache'
+    },
+    history: {
+      empty: 'No prompt activity yet.',
+      selectedDayDetails: 'Selected day details',
+      readOnlySubtitle: 'Read-only prompt cards captured on the selected day.',
+      filterSubtitle: (status: string) => `Showing only "${status}" - click the pill again to clear the filter`,
+      noPromptsForDay: 'No prompts recorded for this day.',
+      noPromptsForStatus: (status: string) => `No "${status}" prompts were recorded for this day.`,
+      activityHeading: 'Activity',
+      activityDrilldown: (month: string, year: number) => `${month} ${year}`,
+      heatmapAriaLabel: 'Prompt activity heatmap',
+      previousYear: 'Previous year',
+      nextYear: 'Next year',
+      less: 'Less',
+      more: 'More',
+      backToYearView: 'Back to year view',
+      tooltipTotal: (total: number) => `Total: ${total}`,
+      tooltipUnused: (count: number) => `Unused: ${count}`,
+      tooltipCompleted: (count: number) => `Completed: ${count}`,
+      copyContent: 'Copy content',
+      clickToExpand: 'Click to expand',
+      clickToCollapse: 'Click to collapse',
+      itemsCount: (count: number) => `${count} items`,
+      statusCount: (status: string, count: number) => `${status} ${count}`
+    },
+    shortcuts: {
+      heading: 'Shortcuts',
+      subtitle: 'View and adjust Prompter shortcut bindings.',
+      tableAriaLabel: 'Prompter shortcuts',
+      commandColumn: 'Command',
+      shortcutColumn: 'Shortcut',
+      unassigned: 'Unassigned',
+      listening: 'Listening...',
+      saving: 'Saving...',
+      edit: 'Edit',
+      reset: 'Reset',
+      editAriaLabel: (label: string) => `Edit ${label} shortcut`,
+      savingAriaLabel: (label: string) => `Saving ${label} shortcut…`,
+      resetAriaLabel: (label: string) => `Reset ${label} to default`,
+      saved: (label: string) => `${label} shortcut saved.`,
+      saveFailed: 'Failed to save shortcut.',
+      conflictOpen: 'Open Prompter cannot use the same shortcut as the import commands.',
+      conflictWithOpen: (label: string) => `${label} conflicts with Open Prompter.`
+    },
+    host: {
+      viewAction: 'View',
+      notifications: {
+        promptAutoCompleted: (title: string) => `Prompt auto-completed: ${title}...`,
+        promptCompleted: (title: string) => `Prompt completed: ${title}...`,
+        promptCompletedGeneric: 'Prompt completed',
+        newRunningPrompt: (title: string) => `New running prompt detected: ${title}...`
+      },
+      errors: {
+        openPanelFailed: 'Prompter: failed to open the panel. Check the output panel for details.',
+        importSelectionFailed: 'Prompter: failed to import the selection. Check the output panel for details.',
+        activateFailed: 'Prompter failed to activate. Check the "Output" panel → Prompter for details.',
+        jumpToSourceFailed: (sourceType: string) => `Unable to jump to the ${sourceType} session`,
+        shortcutUnavailable: 'Shortcut updates are unavailable in this panel',
+        shortcutRollbackFailed: (message?: string) =>
+          message ? `Failed to roll back Prompter shortcuts: ${message}` : 'Failed to roll back Prompter shortcuts',
+        shortcutApplyFailed: (message?: string) => message ?? 'Failed to apply Prompter shortcuts'
+      }
+    }
+  }
+} as const;
+
+export function getLocaleText(language: Locale) {
+  return text[language] ?? text['zh-CN'];
+}
+
+export function getShortcutLabel(command: PrompterCommandId, language: Locale): string {
+  return shortcutLabels[language]?.[command] ?? shortcutLabels.en[command];
+}

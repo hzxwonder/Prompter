@@ -1,0 +1,140 @@
+{
+  "name": "prompter",
+  "displayName": "Prompter",
+  "description": "A VS Code prompt workspace for collecting context, reusing prompt snippets, and tracking prompt history.",
+  "version": "0.0.1",
+  "license": "MIT",
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.98.0"
+  },
+  "publisher": "hzxwonder",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hzxwonder/Prompter.git"
+  },
+  "homepage": "https://github.com/hzxwonder/Prompter",
+  "bugs": {
+    "url": "https://github.com/hzxwonder/Prompter/issues"
+  },
+  "categories": [
+    "Productivity",
+    "Other"
+  ],
+  "keywords": [
+    "prompt",
+    "prompts",
+    "ai",
+    "workflow",
+    "productivity",
+    "codex",
+    "claude",
+    "cursor"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "prompter",
+          "title": "Prompter",
+          "icon": "resources/prompter-activitybar.svg"
+        }
+      ]
+    },
+    "views": {
+      "prompter": [
+        {
+          "id": "prompterSidebar",
+          "name": "Quick Actions"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "prompter.open",
+        "title": "Prompter: Open"
+      },
+      {
+        "command": "prompter.openShortcuts",
+        "title": "Prompter: Open Shortcuts"
+      },
+      {
+        "command": "prompter.importSelection",
+        "title": "Prompter: Import Selection to Prompt"
+      },
+      {
+        "command": "prompter.importResource",
+        "title": "Prompter: Add Resource to Prompt"
+      },
+      {
+        "command": "prompter.importTerminalSelection",
+        "title": "Prompter: Import Terminal Selection"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "prompter.importSelection",
+          "when": "editorHasSelection"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "prompter.importResource"
+        }
+      ],
+      "terminal/context": [
+        {
+          "command": "prompter.importTerminalSelection",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "prompter.importSelection",
+        "key": "ctrl+shift+f",
+        "mac": "ctrl+shift+f",
+        "when": "editorTextFocus && editorHasSelection"
+      },
+      {
+        "command": "prompter.importResource",
+        "key": "ctrl+shift+f",
+        "mac": "ctrl+shift+f",
+        "when": "filesExplorerFocus && !inputFocus"
+      },
+      {
+        "command": "prompter.importTerminalSelection",
+        "key": "ctrl+shift+f",
+        "mac": "ctrl+shift+f",
+        "when": "terminalFocus"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "test:unit": "vitest run tests/unit",
+    "test:webview": "vitest run tests/webview --environment=jsdom",
+    "test": "npm run test:unit && npm run test:webview",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.0.0"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.0.0",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/node": "^22.13.10",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "@types/vscode": "^1.98.0",
+    "esbuild": "^0.25.0",
+    "jsdom": "^26.0.0",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
+  }
+}

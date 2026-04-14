@@ -1,0 +1,115 @@
+import '@testing-library/jest-dom/vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { HistoryPage } from '../../webview/src/pages/HistoryPage';
+import type { PrompterState } from '../../src/shared/models';
+import { createInitialState } from '../../src/shared/models';
+
+function createHistoryState(): PrompterState {
+  return {
+    ...createInitialState('2026-04-08T10:00:00.000Z'),
+    activeView: 'history',
+    selectedDate: '2026-04-08',
+    dailyStats: [
+      {
+        date: '2026-04-08',
+        usedCount: 1,
+        unusedCount: 1,
+        completedCount: 1,
+        totalCount: 2
+      }
+    ],
+    cards: [
+      {
+        id: 'history-1',
+        title: 'Draft API prompt',
+        content: 'Map the API surface before refactoring.',
+        status: 'unused',
+        runtimeState: 'unknown',
+        groupId: 'session-a',
+        groupName: 'api',
+        groupColor: '#7C3AED',
+        sourceType: 'manual',
+        createdAt: '2026-04-08T10:00:00.000Z',
+        updatedAt: '2026-04-08T10:00:00.000Z',
+        dateBucket: '2026-04-08',
+        fileRefs: [],
+        justCompleted: false
+      },
+      {
+        id: 'history-2',
+        title: 'Draft API prompt 2',
+        content: 'Summarize the release notes.',
+        status: 'completed',
+        runtimeState: 'finished',
+        groupId: 'session-b',
+        groupName: '未分类',
+        groupColor: '#10B981',
+        sourceType: 'codex',
+        sourceRef: 'codex-session-b',
+        createdAt: '2026-04-08T09:00:00.000Z',
+        updatedAt: '2026-04-08T10:30:00.000Z',
+        completedAt: '2026-04-08T10:30:00.000Z',
+        dateBucket: '2026-04-08',
+        fileRefs: [],
+        justCompleted: false
+      }
+    ]
+  };
+}
+
+afterEach(cleanup);
+
+describe('HistoryPage', () => {
+  it('renders selected date cards grouped by stable group id and falls back to session id for codex history labels', async () => {
+    const user = userEvent.setup();
+    const state = createHistoryState();
+
+    render(
+      <HistoryPage
+        dailyStats={state.dailyStats}
+        cards={state.cards}
+        selectedDate={state.selectedDate}
+        onSelectDate={() => {}}
+      />
+    );
+
+    expect(screen.getByRole('region', { name: '选中日期详情' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /api 1 条/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /codex-session-b 1 条/ })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /codex-session-b 1 条/ }));
+    expect(screen.getByText('Summarize the release notes.')).toBeInTheDocument();
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+  });
+
+  it('shows an empty state when no activity exists', () => {
+    render(<HistoryPage dailyStats={[]} cards={[]} selectedDate={undefined} onSelectDate={() => {}} language="en" />);
+
+    expect(screen.getByText('No prompt activity yet.')).toBeInTheDocument();
+  });
+
+  it('switches history copy to English when English is selected', async () => {
+    const user = userEvent.setup();
+    const state = createHistoryState();
+
+    render(
+      <HistoryPage
+        dailyStats={state.dailyStats}
+        cards={state.cards}
+        selectedDate={state.selectedDate}
+        onSelectDate={() => {}}
+        language="en"
+      />
+    );
+
+    expect(screen.getByRole('region', { name: 'Selected day details' })).toBeInTheDocument();
+    expect(screen.getByText('Read-only prompt cards captured on the selected day.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /api 1 items/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /codex-session-b 1 items/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unused 1' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Completed 1' })).toBeInTheDocument();
+
+    expect(screen.getByRole('button', { name: 'Copy content' })).toBeInTheDocument();
+  });
+});
