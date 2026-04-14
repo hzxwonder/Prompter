@@ -298,16 +298,27 @@ export class LogSyncService {
 
   private async updateActiveCardTimestamps(): Promise<void> {
     const currentState = await this.repository.getState();
-    let changed = false;
+    const latestActiveCardBySession = new Map<string, typeof currentState.cards[number]>();
 
     for (const card of currentState.cards) {
       if (card.status !== 'active' || card.runtimeState !== 'running') continue;
       if (!card.sourceRef || card.sourceType === 'manual' || card.sourceType === 'cursor') continue;
 
-      const sessionId = card.sourceType === 'codex'
-        ? (card.sourceRef.includes(':') ? card.sourceRef.split(':')[0] : card.sourceRef)
-        : card.sourceRef;
+      const sessionId = resolveSessionId(card.sourceType, card.sourceRef);
+      if (!sessionId) continue;
 
+      const sessionKey = `${card.sourceType}:${sessionId}`;
+      const existing = latestActiveCardBySession.get(sessionKey);
+      if (!existing || (existing.createdAt ?? '') < (card.createdAt ?? '')) {
+        latestActiveCardBySession.set(sessionKey, card);
+      }
+    }
+
+    let changed = false;
+
+    for (const card of latestActiveCardBySession.values()) {
+      const sessionId = resolveSessionId(card.sourceType, card.sourceRef);
+      if (!sessionId) continue;
       const lastModMs = this.parser.getSessionLastModifiedMs(
         card.sourceType as 'claude-code' | 'codex' | 'roo-code',
         sessionId

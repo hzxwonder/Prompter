@@ -2,7 +2,7 @@
   "name": "prompter",
   "displayName": "Prompter",
   "description": "A VS Code prompt workspace for collecting context, reusing prompt snippets, and tracking prompt history.",
-  "version": "0.0.2",
+  "version": "1.0.0",
   "license": "MIT",
   "icon": "icon.png",
   "engines": {
