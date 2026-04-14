@@ -179,7 +179,7 @@ export class LogSyncService {
 
   private async sync(): Promise<void> {
     try {
-      const { inserted: newPrompts, justCompletedSourceRefs } = this.parser.sync();
+      const { inserted: newPrompts, justCompletedSourceRefs, silentlyCompletedSourceRefs } = this.parser.sync();
 
       for (const prompt of newPrompts) {
         await this.handleNewPrompt(prompt);
@@ -193,6 +193,17 @@ export class LogSyncService {
         );
         if (card) {
           await this.handlePromptCompleted(sourceRef);
+        }
+      }
+
+      for (const sourceRef of silentlyCompletedSourceRefs) {
+        const latestState = await this.repository.getState();
+        const card = latestState.cards.find(
+          (c) => c.sourceRef === sourceRef && c.status === 'active'
+        );
+        if (card) {
+          await this.repository.markCardCompletedFromLog(sourceRef, new Date().toISOString(), { justCompleted: false });
+          await PrompterPanel.refresh(this.repository);
         }
       }
 
@@ -419,6 +430,16 @@ export class LogSyncService {
     const completedAt = normalizeCompletionTimestamp(prompt.createdAt);
 
     for (const card of state.cards) {
+      if (
+        card.status === 'completed' &&
+        card.justCompleted &&
+        card.sourceType === prompt.source &&
+        resolveSessionId(card.sourceType, card.sourceRef) === prompt.sessionId
+      ) {
+        await this.repository.acknowledgeCompletion(card.id);
+        continue;
+      }
+
       if (card.status !== 'active' || card.runtimeState !== 'running') {
         continue;
       }

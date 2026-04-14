@@ -630,7 +630,8 @@ export class PromptRepository {
     await this.persist();
   }
 
-  async markCardCompletedFromLog(sourceRef: string, completedAt: string): Promise<void> {
+  async markCardCompletedFromLog(sourceRef: string, completedAt: string, options?: { justCompleted?: boolean }): Promise<void> {
+    const shouldMarkJustCompleted = options?.justCompleted ?? true;
     this.state.cards = this.state.cards.map((card) =>
       card.sourceRef === sourceRef || card.id === sourceRef
         ? {
@@ -639,7 +640,7 @@ export class PromptRepository {
             runtimeState: 'finished',
             completedAt,
             updatedAt: completedAt,
-            justCompleted: true
+            justCompleted: shouldMarkJustCompleted
           }
         : card
     );

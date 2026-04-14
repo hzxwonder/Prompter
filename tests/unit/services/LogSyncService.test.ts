@@ -177,6 +177,55 @@ describe('LogSyncService', () => {
     expect(repository.saveImportedCard).toHaveBeenCalled();
   });
 
+  it('auto-acknowledges the previous completed prompt in the same session when a new prompt arrives', async () => {
+    const state = createInitialState('2026-04-08T10:30:00.000Z');
+    state.cards = [
+      {
+        id: 'card-1',
+        title: 'Previous prompt',
+        content: 'Inspect the activation failure.',
+        status: 'completed',
+        runtimeState: 'finished',
+        groupId: 'codex:session-1',
+        groupName: 'session-1',
+        groupColor: '#22c55e',
+        sourceType: 'codex',
+        sourceRef: 'session-1:turn-1',
+        createdAt: '2026-04-08T09:50:00.000Z',
+        updatedAt: '2026-04-08T10:20:00.000Z',
+        completedAt: '2026-04-08T10:20:00.000Z',
+        dateBucket: '2026-04-08',
+        fileRefs: [],
+        justCompleted: true
+      }
+    ];
+
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      acknowledgeCompletion: vi.fn().mockResolvedValue(undefined),
+      markCardCompletedFromLog: vi.fn().mockResolvedValue(undefined),
+      saveImportedCard: vi.fn().mockResolvedValue({
+        id: 'card-2',
+        title: 'Newer prompt'
+      })
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+
+    await (service as any).handleNewPrompt({
+      source: 'codex',
+      sessionId: 'session-1',
+      sourceRef: 'session-1:turn-2',
+      project: 'session-1',
+      userInput: 'Open the prompt workspace directly from the activity bar.',
+      createdAt: '2026-04-08T10:30:00.000Z',
+      status: 'running'
+    });
+
+    expect(repository.acknowledgeCompletion).toHaveBeenCalledWith('card-1');
+    expect(repository.saveImportedCard).toHaveBeenCalled();
+  });
+
   it('only refreshes lastActiveAt for the latest active prompt in the same session', async () => {
     const state = createInitialState('2026-04-08T10:30:00.000Z');
     state.cards = [

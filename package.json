@@ -1,7 +1,7 @@
 {
   "name": "prompter",
   "displayName": "Prompter",
-  "description": "A VS Code prompt workspace for collecting context, reusing prompt snippets, and tracking prompt history.",
+  "description": "A prompt workspace for VS Code to collect context, reuse prompt blocks, and track AI prompt sessions.",
   "version": "1.0.0",
   "license": "MIT",
   "icon": "icon.png",
@@ -26,17 +26,20 @@
     "onCommand:prompter.importTerminalSelection"
   ],
   "categories": [
-    "Productivity",
     "Other"
   ],
   "keywords": [
     "prompt",
     "prompts",
     "ai",
+    "prompt-workspace",
+    "context",
     "workflow",
-    "productivity",
+    "history",
+    "shortcuts",
     "codex",
-    "claude",
+    "claude-code",
+    "roo-code",
     "cursor"
   ],
   "main": "./dist/extension.js",

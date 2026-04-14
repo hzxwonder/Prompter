@@ -14,6 +14,7 @@ export interface LogPrompt {
   status: 'running' | 'completed';
   justCompleted: boolean;
   completedAt?: string;
+  completionKind?: 'completed' | 'aborted';
 }
 
 interface StoredPromptRecord {
@@ -26,6 +27,7 @@ interface StoredPromptRecord {
   status: 'running' | 'completed';
   justCompleted: boolean;
   completedAt?: string;
+  completionKind?: 'completed' | 'aborted';
 }
 
 interface ParsedPromptRecord {
@@ -36,6 +38,7 @@ interface ParsedPromptRecord {
   userInput: string;
   createdAt: string;
   completedAt?: string;
+  completionKind?: 'completed' | 'aborted';
 }
 
 interface LogParserState {
@@ -157,6 +160,7 @@ export function extractCodexPromptRecords(
   const prompts: ParsedPromptRecord[] = [];
   const turnStartById = new Map<string, string>();
   const taskCompletedAtByTurnId = new Map<string, string>();
+  const completionKindByTurnId = new Map<string, 'completed' | 'aborted'>();
   const acceptedTurnIds = new Set<string>();
   let activeTurnId: string | null = null;
 
@@ -207,6 +211,20 @@ export function extractCodexPromptRecords(
           continue;
         }
         taskCompletedAtByTurnId.set(turnId, event.timestamp || dateStr);
+        completionKindByTurnId.set(turnId, 'completed');
+        continue;
+      }
+
+      if (eventType === 'event_msg' && payload.type === 'turn_aborted' && payload.turn_id) {
+        const turnId = String(payload.turn_id);
+        if (ignoredTurnIds.has(turnId)) {
+          continue;
+        }
+        if (!acceptedTurnIds.has(turnId)) {
+          continue;
+        }
+        taskCompletedAtByTurnId.set(turnId, event.timestamp || dateStr);
+        completionKindByTurnId.set(turnId, 'aborted');
         continue;
       }
 
@@ -221,7 +239,8 @@ export function extractCodexPromptRecords(
             project: sessionId,
             userInput,
             createdAt: turnStartById.get(activeTurnId) || event.timestamp || dateStr,
-            completedAt: taskCompletedAtByTurnId.get(activeTurnId)
+            completedAt: taskCompletedAtByTurnId.get(activeTurnId),
+            completionKind: completionKindByTurnId.get(activeTurnId)
           });
         }
         continue;
@@ -261,7 +280,8 @@ export function extractCodexPromptRecords(
                 project: sessionId,
                 userInput,
                 createdAt: event.timestamp || turnStartById.get(sourceTurnId) || dateStr,
-                completedAt: taskCompletedAtByTurnId.get(sourceTurnId)
+                completedAt: taskCompletedAtByTurnId.get(sourceTurnId),
+                completionKind: completionKindByTurnId.get(sourceTurnId)
               });
             }
           }
@@ -274,7 +294,8 @@ export function extractCodexPromptRecords(
 
   return prompts.map((prompt) => ({
     ...prompt,
-    completedAt: taskCompletedAtByTurnId.get(prompt.sourceRef.slice(sessionId.length + 1)) ?? prompt.completedAt
+    completedAt: taskCompletedAtByTurnId.get(prompt.sourceRef.slice(sessionId.length + 1)) ?? prompt.completedAt,
+    completionKind: completionKindByTurnId.get(prompt.sourceRef.slice(sessionId.length + 1)) ?? prompt.completionKind
   }));
 }
 
@@ -282,7 +303,7 @@ export function resolvePromptStatuses(
   allPrompts: ParsedPromptRecord[],
   persistedPrompts: StoredPromptRecord[],
   runningSessions: Set<string>
-): { inserted: LogPrompt[]; nextState: StoredPromptRecord[]; justCompletedSourceRefs: string[] } {
+): { inserted: LogPrompt[]; nextState: StoredPromptRecord[]; justCompletedSourceRefs: string[]; silentlyCompletedSourceRefs: string[] } {
   const buildPromptKey = (prompt: Pick<StoredPromptRecord, 'source' | 'sourceRef' | 'userInput' | 'createdAt'>): string => {
     if (prompt.source === 'roo-code') {
       return `${prompt.source}|${prompt.sourceRef}|${prompt.userInput}`;
@@ -319,7 +340,8 @@ export function resolvePromptStatuses(
       project: latest.project,
       userInput: latest.userInput,
       createdAt: latest.createdAt,
-      completedAt: latest.completedAt ?? row.completedAt
+      completedAt: latest.completedAt ?? row.completedAt,
+      completionKind: latest.completionKind ?? row.completionKind
     }];
   });
 
@@ -402,6 +424,7 @@ export function resolvePromptStatuses(
     const justCompleted =
       row.status === 'running' &&
       nextStatus === 'completed' &&
+      row.completionKind !== 'aborted' &&
       !previouslyCompletedPromptKeys.has(promptKey(row.source, row.sourceRef)) &&
       (row.source === 'codex'
         ? true
@@ -418,7 +441,17 @@ export function resolvePromptStatuses(
     .filter((row) => row.justCompleted && (row.source !== 'codex' || previouslyRunningPromptKeys.has(promptKey(row.source, row.sourceRef))))
     .map((row) => row.sourceRef);
 
-  return { inserted, nextState, justCompletedSourceRefs };
+  const silentlyCompletedSourceRefs = nextState
+    .filter(
+      (row) =>
+        row.status === 'completed' &&
+        row.completionKind === 'aborted' &&
+        row.source === 'codex' &&
+        previouslyRunningPromptKeys.has(promptKey(row.source, row.sourceRef))
+    )
+    .map((row) => row.sourceRef);
+
+  return { inserted, nextState, justCompletedSourceRefs, silentlyCompletedSourceRefs };
 }
 
 export class LogParser {
@@ -883,10 +916,10 @@ export class LogParser {
     return `${prompt.source}|${prompt.sourceRef}|${prompt.userInput}|${this.normalizeTimestamp(prompt.createdAt)}`;
   }
 
-  sync(): { inserted: LogPrompt[]; justCompletedSourceRefs: string[] } {
+  sync(): { inserted: LogPrompt[]; justCompletedSourceRefs: string[]; silentlyCompletedSourceRefs: string[] } {
     const allPrompts = [...this.scanClaudeLogs(), ...this.scanCodexLogs(), ...this.scanRooLogs()];
     const runningSessions = this.getRunningSessions();
-    const { inserted, nextState, justCompletedSourceRefs } = resolvePromptStatuses(
+    const { inserted, nextState, justCompletedSourceRefs, silentlyCompletedSourceRefs } = resolvePromptStatuses(
       allPrompts,
       this.state.prompts,
       runningSessions
@@ -896,7 +929,8 @@ export class LogParser {
     log(`保存 ${inserted.length} 条 prompt 到状态文件`);
     return {
       inserted,
-      justCompletedSourceRefs
+      justCompletedSourceRefs,
+      silentlyCompletedSourceRefs
     };
   }
 

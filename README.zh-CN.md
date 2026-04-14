@@ -1,7 +1,7 @@
 # Prompter
 
 <p align="center">
-  <a href="./README.md">English</a> | <a href="./README.zh-CN.md">简体中文</a>
+  <a href="./README.md"><strong>English</strong></a> | <a href="./README.zh-CN.md"><strong>简体中文</strong></a>
 </p>
 
 <p align="center">
@@ -9,162 +9,183 @@
 </p>
 
 <p align="center">
-  在 VS Code 里，更快地整理上下文、拼装 Prompt、复用高价值提示词。
+  一个面向 VS Code 的实用 Prompt 工作区。
 </p>
 
-Prompter 把 Prompt 工作变成一个真正可管理的编辑器流程。你不需要再频繁手动复制代码、文件路径、终端输出，也不需要一遍遍重写已经验证过的提示词结构。它提供一个独立工作区，用来集中收集上下文、组合 Prompt、复用模块片段，并持续回看你已经使用过的 Prompt。
+<p align="center">
+  更快地收集上下文、更高质量地组织 Prompt、复用高频提示词结构，并把 Prompt 历史沉淀下来。
+</p>
 
-它尤其适合经常配合 Codex、Claude Code、Roo Code、Cursor 等 AI 编码工具工作的用户。
+Prompter 是为每天都在 VS Code 里和 AI 协作的用户设计的。
+
+它不只是一个输入框，而是一个专门的 Prompt 工作区。你可以在这里收集代码上下文、导入文件路径和终端输出、组织 Prompt 状态、复用模块化片段，并持续回看历史 Prompt。
+
+它尤其适合搭配 Codex、Claude Code、Roo Code、Cursor 等 AI 编码工具一起使用。
 
 ## 目录
 
 - [为什么需要 Prompter](#为什么需要-prompter)
-- [你可以用它做什么](#你可以用它做什么)
+- [核心功能](#核心功能)
 - [命令与快捷键](#命令与快捷键)
-- [典型工作流](#典型工作流)
-- [会话同步与历史回看](#会话同步与历史回看)
-- [可配置项](#可配置项)
-- [数据存储](#数据存储)
+- [一个典型工作流](#一个典型工作流)
+- [会话同步](#会话同步)
+- [设置与存储](#设置与存储)
+- [适合哪些用户](#适合哪些用户)
 
 ## 为什么需要 Prompter
 
-Prompter 解决的是一个很具体的问题：Prompt 工作频率高、重复多、上下文分散。
+Prompt 工作天然是高频、重复、分散的。
 
-在没有专门工作流时，你经常需要手动做这些事：
+在没有专门工作流时，你往往需要反复做这些事：
 
-- 复制一段代码到 AI 对话中
-- 再去找对应文件路径贴进去
-- 手动搬运终端输出
-- 反复重写相似的 Prompt 结构
-- 今天写过的好 Prompt 明天就找不到
-- 不清楚哪些 Prompt 还在使用中，哪些已经结束
+- 把代码片段复制进 AI 对话
+- 手动补文件路径
+- 从终端复制报错和输出
+- 一遍遍重写相似的 Prompt 结构
+- 一个好 Prompt 用完就丢
+- 分不清哪些 Prompt 还在进行中，哪些已经结束
 
-Prompter 的目标就是把这些重复劳动压缩到一个工作区里。
+Prompter 的目标就是把这些零散操作，收敛成一个清晰的 VS Code 内部工作流。
 
-## 你可以用它做什么
+它要解决的是四件事：
 
-### 1. 在独立 Prompt 工作区里组织你的任务
+- 降低上下文切换
+- 降低重复 Prompt 准备成本
+- 提高 Prompt 的复用率
+- 让 Prompt 使用记录持续可见
 
-执行 `Prompter: Open` 后，可以进入主工作区。
+## 核心功能
+
+### 独立 Prompt 工作区
+
+执行 `Prompter: Open` 后，会打开主工作区。
 
 在这里你可以：
 
-- 先整理 Prompt，再发送到外部 AI 工具
+- 先整理 Prompt，再发送给 AI 工具
 - 按 `Unused`、`Active`、`Completed` 管理卡片
-- 重新打开和修改已有 Prompt
-- 把 Prompt 从一次性输入变成可追踪、可回看的工作流
+- 重新打开旧 Prompt 并继续编辑
+- 让当天的 Prompt 工作保持有序，而不是散落在多个聊天窗口里
 
-### 2. 直接从编辑器导入上下文
+### 快速导入上下文
 
-Prompter 最实用的地方之一，是让上下文收集变得足够快。
+Prompter 最实用的一点，是它把上下文收集做得足够快。
 
 你可以直接导入：
 
-- 编辑器当前选区
+- 当前编辑器选区
 - 资源管理器中的文件或文件夹路径
 - 当前终端选中内容
-- 拖放进编辑区的文件路径
+- 拖入编辑区的文件路径
 
-这样做的好处很直接：少复制、少补格式、少漏上下文。
+这能明显减少手工复制、补格式和遗漏上下文的情况。
 
-### 3. 复用模块化 Prompt 片段
-
-如果你有一批高频使用的 Prompt 结构，比如代码审查、问题定位、方案规划、结果总结，就可以把它们保存成模块片段，后续直接插入，而不是每次从头写。
-
-例如：
-
-- `#root-cause`
-- `#review`
-- `#plan`
-- `#summary`
-
-### 4. 手动确认后即可直接复制使用
+### 手动确认后即可复制使用
 
 当你在工作区里手动确认一个 Prompt 时：
 
-- 它会被保存成卡片
+- 该 Prompt 会被保存成卡片
 - 内容会自动复制到剪贴板
-- 界面会明确提示复制成功
+- 界面会给出明确的复制反馈
 
-这很适合“本地整理，外部发送”的工作方式。
+这很适合“在本地整理 Prompt，再粘贴到外部 AI 工具”的使用方式。
 
-### 5. 追踪不同 session 中的 Prompt 状态
+### 模块化 Prompt 片段复用
 
-Prompter 可以同步外部 agent 日志中的 Prompt 活动，目前支持：
+Prompter 支持沉淀和复用高频 Prompt 结构。
 
-- Claude Code
-- Codex
-- Roo Code
+你可以把常用片段保存下来，例如：
 
-这意味着它不只记录你手动输入的 Prompt，也可以帮你跟踪会话中的 Prompt 使用状态、完成状态和分组历史。
+- 调试
+- 代码审查
+- 方案规划
+- 结果总结
+- 根因分析
 
-### 6. 保留历史，而不是让 Prompt 一次性消失
+这样你最有效的 Prompt 模板就不会停留在一次性文本，而会变成长期可复用的模块。
 
-`History` 页面用来把 Prompt 变成可回看的资产。
+### Prompt 历史与每日回看
+
+`History` 页面可以把 Prompt 变成真正可回看的资产。
 
 你可以：
 
-- 按日期查看 Prompt
-- 用热力图快速定位高频使用日
-- 查看不同状态的 Prompt 数量
-- 把历史 Prompt 再次复制出来继续使用
-- 按来源和 session 分组回溯上下文
+- 按日期浏览 Prompt
+- 用热力图查看每日活跃情况
+- 查看不同状态下的 Prompt 数量
+- 重新复制旧 Prompt
+- 按来源和分组回溯上下文
 
-### 7. 在插件内部直接管理快捷键
+### 内置快捷键管理
 
-Prompter 内置 `Shortcuts` 页面，不需要你手动翻 `keybindings.json`。
+Prompter 提供专门的 `Shortcuts` 页面，不需要你自己去编辑 `keybindings.json`。
 
 你可以：
 
 - 查看当前快捷键
 - 直接录制新的快捷键
-- 一键恢复默认值
-- 让导入类命令在不同上下文中保持一致的操作习惯
+- 恢复默认值
+- 让不同导入动作在不同上下文中保持一致体验
+
+### 左侧 Activity Bar 入口
+
+Prompter 会在 VS Code 左侧 Activity Bar 增加一个独立图标。
+
+它为用户提供了一个稳定入口，方便快速打开主工作区。
 
 ## 命令与快捷键
 
 | 命令 | 作用 | 默认快捷键 |
 | --- | --- | --- |
-| `Prompter: Open` | 打开 Prompter 主工作区 | `Ctrl+E` |
-| `Prompter: Open Shortcuts` | 打开快捷键页面 | 无 |
+| `Prompter: Open` | 打开 Prompter 工作区 | `Ctrl+E` |
+| `Prompter: Open Shortcuts` | 打开内置快捷键页面 | 无 |
 | `Prompter: Import Selection to Prompt` | 导入当前编辑器选区 | `Ctrl+Shift+F` |
 | `Prompter: Add Resource to Prompt` | 导入资源管理器中选中的资源 | `Ctrl+Shift+F` |
 | `Prompter: Import Terminal Selection` | 导入当前终端选中内容 | `Ctrl+Shift+F` |
 
 说明：
 
-- 三个导入命令默认共用同一快捷键，因为它们分别运行在不同上下文中。
-- 这些快捷键都可以在内置 `Shortcuts` 页面中调整。
+- 三个导入命令默认共用同一快捷键，因为它们运行在不同上下文中。
+- 所有快捷键都可以在内置 `Shortcuts` 页面中调整。
 
-## 典型工作流
+## 一个典型工作流
 
-一个很实用的日常流程通常是：
+一个很实用的日常使用流程通常是：
 
 1. 打开 `Prompter: Open`。
-2. 从编辑器导入要讨论的代码。
+2. 导入当前要讨论的代码选区。
 3. 需要时补充文件路径和终端输出。
-4. 插入常用模块片段，例如 review、plan、summary。
-5. 确认 Prompt，并直接复制出来。
-6. 粘贴到 Codex、Claude Code、Cursor、Roo Code 或其它 AI 工具中使用。
+4. 插入常用 Prompt 片段，例如 review、debug、plan、summary。
+5. 确认 Prompt，并直接复制出去。
+6. 粘贴到 Codex、Claude Code、Cursor、Roo Code 或其它 AI 工具中。
 
-Prompter 的价值不在于“多一个面板”，而在于减少上下文切换、减少重复劳动、提升 Prompt 的复用率。
+Prompter 的价值不只是“多一个面板”。
 
-## 会话同步与历史回看
+它真正的价值，是让 Prompt 工作更快、更清晰、更可复用。
 
-Prompter 可以监听支持的日志来源，并把这些 Prompt 活动同步回工作区。
+## 会话同步
 
-它支持的能力包括：
+Prompter 可以从支持的外部日志来源同步 Prompt 活动：
 
-- imported prompt 的 session 分组
-- Prompt 状态自动流转
-- Prompt 完成状态追踪
-- 按日期和来源进行历史回看
+- Claude Code
+- Codex
+- Roo Code
 
-如果你的部分工作流发生在外部 agent 环境中，但你仍希望在 VS Code 里统一回看和管理 Prompt，这一点会非常实用。
+这意味着工作区和历史页不只反映手动草稿，也能反映外部 agent 会话中的 Prompt 轨迹。
 
-## 可配置项
+它可以帮助你追踪：
 
-`Settings` 页面里可以配置：
+- 按 session 导入的 Prompt
+- Prompt 状态变化
+- 已完成 Prompt
+- session 分组
+- 按日期沉淀的 Prompt 历史
+
+如果你的部分工作流发生在外部 agent 环境里，但你仍希望在 VS Code 中统一回看 Prompt 轨迹，这会非常有价值。
+
+## 设置与存储
+
+`Settings` 页面可以配置：
 
 - 语言
 - 主题模式
@@ -172,10 +193,8 @@ Prompter 可以监听支持的日志来源，并把这些 Prompt 活动同步回
 - 完成通知
 - 完成提示音
 - 数据目录
+- 日志来源路径和开关
 - 切换目录时是否迁移已有数据
-- Claude Code、Codex、Roo Code 的日志开关与路径
-
-## 数据存储
 
 Prompter 默认将数据存储在 `~/prompter`。
 
@@ -186,6 +205,16 @@ Prompter 默认将数据存储在 `~/prompter`。
 - `daily-stats.json`
 - `settings.json`
 - `session-groups.json`
+
+## 适合哪些用户
+
+Prompter 适合这类用户：
+
+- 经常给编码 Agent 写 Prompt
+- 经常复用相似 Prompt 结构
+- 需要从代码、文件和终端快速搬运上下文
+- 希望更清楚地看到 Prompt 当前状态
+- 不希望 Prompt 在会话结束后就完全丢失
 
 ## 相关链接
 

@@ -189,6 +189,45 @@ describe('LogParser Codex turn completion', () => {
     ]);
   });
 
+  it('marks a codex turn as completed when turn_aborted is present', () => {
+    const sessionId = 'rollout-2026-04-14T16-00-52-019d8b01-ed0f-7da2-9fd9-103925ad25fc';
+    const lines = [
+      JSON.stringify({
+        timestamp: '2026-04-14T12:15:00.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'task_started',
+          turn_id: 'turn-1'
+        }
+      }),
+      JSON.stringify({
+        timestamp: '2026-04-14T12:15:01.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'user_message',
+          message: '## My request for Codex:\ninterrupted prompt'
+        }
+      }),
+      JSON.stringify({
+        timestamp: '2026-04-14T12:17:00.427Z',
+        type: 'event_msg',
+        payload: {
+          type: 'turn_aborted',
+          turn_id: 'turn-1',
+          reason: 'interrupted',
+          completed_at: 1776169020
+        }
+      })
+    ];
+
+    expect(extractCodexPromptRecords(lines, sessionId, '2026-04-14')).toEqual([
+      expect.objectContaining({
+        sourceRef: `${sessionId}:turn-1`,
+        completedAt: '2026-04-14T12:17:00.427Z'
+      })
+    ]);
+  });
+
   it('keeps only the unfinished turn running within a codex session', () => {
     const sessionId = 'rollout-2026-04-12T20-00-00-019d8174-b2f9-7cb3-99bc-85aa22c13ad8';
     const records = extractCodexPromptRecords([
@@ -303,6 +342,46 @@ describe('LogParser Codex turn completion', () => {
         })
       ])
     );
+  });
+
+  it('does not require confirmation for codex turns completed by turn_aborted', () => {
+    const sessionId = 'rollout-2026-04-14T16-00-52-019d8b01-ed0f-7da2-9fd9-103925ad25fc';
+    const persisted = [
+      {
+        source: 'codex' as const,
+        sessionId,
+        sourceRef: `${sessionId}:turn-1`,
+        project: sessionId,
+        userInput: 'interrupted prompt',
+        createdAt: '2026-04-14T12:15:01.000Z',
+        status: 'running' as const,
+        justCompleted: false
+      }
+    ];
+    const scanned = [
+      {
+        source: 'codex' as const,
+        sessionId,
+        sourceRef: `${sessionId}:turn-1`,
+        project: sessionId,
+        userInput: 'interrupted prompt',
+        createdAt: '2026-04-14T12:15:01.000Z',
+        completedAt: '2026-04-14T12:17:00.427Z',
+        completionKind: 'aborted' as const
+      }
+    ];
+
+    const result = resolvePromptStatuses(scanned, persisted, new Set());
+
+    expect(result.justCompletedSourceRefs).toEqual([]);
+    expect(result.nextState).toEqual([
+      expect.objectContaining({
+        sourceRef: `${sessionId}:turn-1`,
+        status: 'completed',
+        completedAt: '2026-04-14T12:17:00.427Z',
+        justCompleted: false
+      })
+    ]);
   });
 
   it('migrates a legacy codex session-level record onto the matching turn-level prompt', () => {
