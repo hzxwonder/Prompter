@@ -28,7 +28,7 @@ describe('PrompterSidebarViewProvider', () => {
     await provider.resolveWebviewView(webviewView as never);
 
     expect(executeCommand).toHaveBeenCalledWith('prompter.open');
-    expect(webviewView.webview.html).toContain('Opening Prompter');
+    expect(webviewView.webview.html).toContain('Open Prompter');
     expect(visibilityListeners).toHaveLength(1);
   });
 

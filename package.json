@@ -2,7 +2,7 @@
   "name": "prompter",
   "displayName": "Prompter",
   "description": "A VS Code prompt workspace for collecting context, reusing prompt snippets, and tracking prompt history.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "license": "MIT",
   "icon": "icon.png",
   "engines": {
@@ -17,6 +17,14 @@
   "bugs": {
     "url": "https://github.com/hzxwonder/Prompter/issues"
   },
+  "activationEvents": [
+    "onView:prompterSidebar",
+    "onCommand:prompter.open",
+    "onCommand:prompter.openShortcuts",
+    "onCommand:prompter.importSelection",
+    "onCommand:prompter.importResource",
+    "onCommand:prompter.importTerminalSelection"
+  ],
   "categories": [
     "Productivity",
     "Other"
@@ -46,7 +54,8 @@
       "prompter": [
         {
           "id": "prompterSidebar",
-          "name": "Quick Actions"
+          "name": "Quick Actions",
+          "type": "webview"
         }
       ]
     },

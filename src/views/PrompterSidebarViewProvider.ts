@@ -5,7 +5,8 @@ export class PrompterSidebarViewProvider implements vscode.WebviewViewProvider {
 
   async resolveWebviewView(webviewView: vscode.WebviewView): Promise<void> {
     webviewView.webview.options = {
-      enableScripts: false
+      enableScripts: false,
+      enableCommandUris: true
     };
     webviewView.webview.html = getSidebarHtml();
 
@@ -31,15 +32,38 @@ function getSidebarHtml(): string {
     <style>
       body {
         margin: 0;
-        padding: 12px;
+        padding: 14px 12px;
         font-family: var(--vscode-font-family);
         color: var(--vscode-descriptionForeground);
         background: transparent;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        box-sizing: border-box;
+      }
+
+      .launch {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        min-height: 40px;
+        border-radius: 10px;
+        border: 1px solid var(--vscode-button-border, transparent);
+        background: var(--vscode-button-background);
+        color: var(--vscode-button-foreground);
+        text-decoration: none;
+        font-weight: 600;
+      }
+
+      .launch:hover {
+        background: var(--vscode-button-hoverBackground);
       }
     </style>
   </head>
   <body>
-    Opening Prompter...
+    <a class="launch" href="command:prompter.open">Open Prompter</a>
   </body>
 </html>`;
 }
