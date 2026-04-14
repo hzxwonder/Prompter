@@ -880,7 +880,6 @@ export class LogParser {
     try {
       addRecentlyModifiedSessions(CLAUDE_PROJECTS_DIR, 'claude-code');
       addRecentlyModifiedSessions(CODEX_SESSIONS_DIR, 'codex');
-      addRecentlyModifiedSessions(ROO_TASKS_DIR, 'roo-code');
     } catch (error) {
       logError('备用 session 检测失败', error);
     }
@@ -917,7 +916,7 @@ export class LogParser {
   }
 
   sync(): { inserted: LogPrompt[]; justCompletedSourceRefs: string[]; silentlyCompletedSourceRefs: string[] } {
-    const allPrompts = [...this.scanClaudeLogs(), ...this.scanCodexLogs(), ...this.scanRooLogs()];
+    const allPrompts = [...this.scanClaudeLogs(), ...this.scanCodexLogs()];
     const runningSessions = this.getRunningSessions();
     const { inserted, nextState, justCompletedSourceRefs, silentlyCompletedSourceRefs } = resolvePromptStatuses(
       allPrompts,

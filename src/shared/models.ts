@@ -141,7 +141,7 @@ export function createInitialState(nowIso: string, _platform?: string): Prompter
       dataDir: '~/prompter',
       language: 'zh-CN',
       theme: 'system',
-      defaultImportMode: 'relative',
+      defaultImportMode: 'absolute',
       notifyOnFinish: true,
       notifyOnPause: true,
       completionTone: 'soft-bell',
@@ -150,7 +150,7 @@ export function createInitialState(nowIso: string, _platform?: string): Prompter
         'claude-code': { enabled: true, path: '~/.claude/projects' },
         codex: { enabled: true, path: '~/.codex/sessions' },
         'roo-code': {
-          enabled: true,
+          enabled: false,
           path: '~/Library/Application Support/Cursor/User/globalStorage/rooveterinaryinc.roo-cline/tasks'
         }
       },

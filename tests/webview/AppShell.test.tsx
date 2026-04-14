@@ -272,7 +272,7 @@ describe('App shell', () => {
     });
   });
 
-  it('overwrites an edited unused card instead of autosaving a new one when leaving workspace', async () => {
+  it('keeps the edited unused card content in the composer when leaving workspace', async () => {
     const user = userEvent.setup();
     const vscodeApi = await import('../../webview/src/api/vscode');
 
@@ -283,16 +283,12 @@ describe('App shell', () => {
     await user.clear(prompt);
     await user.type(prompt, 'Updated unused prompt');
     await user.click(screen.getByRole('button', { name: '历史' }));
+    await user.click(screen.getByRole('button', { name: '工作台' }));
 
-    expect(vscodeApi.postMessage).toHaveBeenCalledWith({
-      type: 'card:update',
-      payload: {
-        cardId: 'unused-1',
-        title: 'Draft API prompt',
-        content: 'Updated unused prompt',
-        fileRefs: []
-      }
-    });
+    expect(screen.getByRole('textbox', { name: 'Prompt' })).toHaveValue('Updated unused prompt');
+    expect(vscodeApi.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'card:update' })
+    );
   });
 
   it('preserves the first mouse selection in the prompt editor', () => {
@@ -312,7 +308,7 @@ describe('App shell', () => {
     expect(prompt.selectionEnd).toBe(18);
   });
 
-  it('appends imported text into the composer and preserves file references for autosave', async () => {
+  it('keeps imported text in the composer when navigating away from workspace', async () => {
     const user = userEvent.setup();
     const vscodeApi = await import('../../webview/src/api/vscode');
 
@@ -335,14 +331,9 @@ describe('App shell', () => {
 
     await user.click(screen.getByRole('button', { name: '历史' }));
 
-    expect(vscodeApi.postMessage).toHaveBeenCalledWith({
-      type: 'draft:autosave',
-      payload: {
-        title: '',
-        content: 'File: /workspace/src/api.ts:4-8\n```ts\nexport function load() {}\n```',
-        fileRefs: [{ path: '/workspace/src/api.ts', startLine: 4, endLine: 8 }]
-      }
-    });
+    expect(vscodeApi.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'draft:autosave' })
+    );
   });
 
   it('appends imported text on the next line without adding blank lines', async () => {
@@ -565,7 +556,7 @@ describe('App shell', () => {
     expect(screen.queryByRole('textbox', { name: 'Prompt' })).not.toBeInTheDocument();
   });
 
-  it('clears composer after autosave nav-away and saves content as unused card', async () => {
+  it('preserves composer content when switching away from workspace and back', async () => {
     const user = userEvent.setup();
     const vscodeApi = await import('../../webview/src/api/vscode');
 
@@ -577,10 +568,8 @@ describe('App shell', () => {
     await user.click(screen.getByRole('button', { name: '历史' }));
     await user.click(screen.getByRole('button', { name: '工作台' }));
 
-    // 草稿应已清空（避免重复保存），内容已存入未使用卡片
-    expect(screen.getByRole('textbox', { name: 'Prompt' })).toHaveValue('');
-    // 自动保存消息应已发送
-    expect(vscodeApi.postMessage).toHaveBeenCalledWith(
+    expect(screen.getByRole('textbox', { name: 'Prompt' })).toHaveValue('My retained draft');
+    expect(vscodeApi.postMessage).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: 'draft:autosave' })
     );
   });

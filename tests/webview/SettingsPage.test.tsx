@@ -11,7 +11,7 @@ const createSettings = (): PrompterSettings => ({
   dataDir: '~/prompter/cache',
   language: 'zh-CN',
   theme: 'system',
-  defaultImportMode: 'relative',
+  defaultImportMode: 'absolute',
   notifyOnFinish: false,
   notifyOnPause: true,
   completionTone: 'off',
@@ -19,7 +19,7 @@ const createSettings = (): PrompterSettings => ({
   logSources: {
     'claude-code': { enabled: true, path: '~/Library/Logs/Claude' },
     codex: { enabled: false, path: '~/Library/Logs/Codex' },
-    'roo-code': { enabled: true, path: '~/Library/Application Support/Cursor/User/globalStorage/rooveterinaryinc.roo-cline/tasks' }
+    'roo-code': { enabled: false, path: '~/Library/Application Support/Cursor/User/globalStorage/rooveterinaryinc.roo-cline/tasks' }
   }
 });
 
@@ -39,8 +39,8 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('heading', { name: '存储与日志' })).toBeInTheDocument();
 
     expect(screen.getByLabelText('语言')).toHaveValue('zh-CN');
-    expect(screen.getByLabelText('主题')).toHaveValue('system');
-    expect(screen.getByLabelText('默认导入方式')).toHaveValue('relative');
+    expect(screen.queryByLabelText('主题')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('默认导入方式')).not.toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: 'Prompt 完成时通知' })).not.toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Prompt 暂停时通知' })).toBeChecked();
     expect(screen.getByLabelText('完成提示音')).toHaveValue('off');
@@ -50,7 +50,8 @@ describe('SettingsPage', () => {
     expect(screen.getByLabelText('claude-code 日志路径')).toHaveValue('~/Library/Logs/Claude');
     expect(screen.getByRole('checkbox', { name: '启用 codex 日志' })).not.toBeChecked();
     expect(screen.getByLabelText('codex 日志路径')).toHaveValue('~/Library/Logs/Codex');
-    expect(screen.getByRole('button', { name: '清空缓存' })).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: '启用 roo-code 日志' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '清空缓存' })).not.toBeInTheDocument();
   });
 
   it('switches settings copy to English when English is selected', () => {
@@ -66,13 +67,13 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('heading', { name: 'General' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Notifications' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Storage & logs' })).toBeInTheDocument();
-    expect(screen.getByText('Choose the interface language, theme, and default import behavior.')).toBeInTheDocument();
+    expect(screen.getByText('Choose the interface language.')).toBeInTheDocument();
     expect(screen.getByLabelText('Language')).toHaveValue('en');
-    expect(screen.getByLabelText('Theme')).toHaveValue('system');
-    expect(screen.getByLabelText('Default import mode')).toHaveValue('relative');
+    expect(screen.queryByLabelText('Theme')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Default import mode')).not.toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: 'Notify when a prompt pauses' })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Enable claude-code logs' })).toBeChecked();
-    expect(screen.getByRole('button', { name: 'Clear cache' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Clear cache' })).not.toBeInTheDocument();
   });
 
   it('reveals staged data-directory apply controls and only switches after apply', async () => {
@@ -127,8 +128,6 @@ describe('SettingsPage', () => {
     render(<Harness />);
 
     await user.selectOptions(screen.getByLabelText('语言'), 'en');
-    await user.selectOptions(screen.getByLabelText('Theme'), 'dark');
-    await user.selectOptions(screen.getByLabelText('Default import mode'), 'absolute');
     await user.click(screen.getByRole('checkbox', { name: 'Notify when a prompt finishes' }));
     await user.click(screen.getByRole('checkbox', { name: 'Notify when a prompt pauses' }));
     await user.selectOptions(screen.getByLabelText('Completion tone'), 'soft-bell');
@@ -139,8 +138,8 @@ describe('SettingsPage', () => {
     await user.type(screen.getByLabelText('codex log path'), '/tmp/codex.log');
 
     expect(screen.getByLabelText('Language')).toHaveValue('en');
-    expect(screen.getByLabelText('Theme')).toHaveValue('dark');
-    expect(screen.getByLabelText('Default import mode')).toHaveValue('absolute');
+    expect(screen.queryByLabelText('Theme')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Default import mode')).not.toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: 'Notify when a prompt finishes' })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Notify when a prompt pauses' })).not.toBeChecked();
     expect(screen.getByLabelText('Completion tone')).toHaveValue('soft-bell');
@@ -181,17 +180,6 @@ describe('SettingsPage', () => {
     expect(screen.getByLabelText('自定义提示音路径')).toBeInTheDocument();
   });
 
-  it('calls the clear-cache action when the clear cache button is pressed', async () => {
-    const user = userEvent.setup();
-    const onClearCache = vi.fn();
-
-    render(<SettingsPage settings={createSettings()} onSettingsChange={() => {}} onDataDirSwitch={() => {}} onClearCache={onClearCache} />);
-
-    await user.click(screen.getByRole('button', { name: '清空缓存' }));
-
-    expect(onClearCache).toHaveBeenCalledTimes(1);
-  });
-
   it('renders safely when a log source entry is missing', () => {
     const settings = createSettings();
     const partialSettings = {
@@ -213,5 +201,6 @@ describe('SettingsPage', () => {
 
     expect(screen.getByRole('checkbox', { name: '启用 codex 日志' })).not.toBeChecked();
     expect(screen.getByLabelText('codex 日志路径')).toHaveValue('');
+    expect(screen.queryByRole('checkbox', { name: '启用 roo-code 日志' })).not.toBeInTheDocument();
   });
 });

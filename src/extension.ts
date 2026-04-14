@@ -87,7 +87,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             text: formatSelectionImport({
               filePath: editor.document.uri.fsPath,
               workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
-              pathMode: state.settings.defaultImportMode,
+              pathMode: 'absolute',
               startLine: editor.selection.start.line + 1,
               endLine: editor.selection.end.line + 1,
               selection
@@ -124,7 +124,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           text: formatFilePathImport(
             targetResource.fsPath,
             vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
-            state.settings.defaultImportMode
+            'absolute'
           ),
           fileRefs: [{ path: targetResource.fsPath }]
         });

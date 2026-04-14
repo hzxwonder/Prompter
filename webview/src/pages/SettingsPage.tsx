@@ -65,29 +65,6 @@ export function SettingsPage({
                 <option value="en">English</option>
               </select>
             </label>
-
-            <label className="field">
-              <span>{localeText.settings.theme}</span>
-              <select value={settings.theme} onChange={(event) => onSettingsChange({ theme: event.target.value as PrompterSettings['theme'] })}>
-                <option value="system">{localeText.settings.themeSystem}</option>
-                <option value="light">{localeText.settings.themeLight}</option>
-                <option value="dark">{localeText.settings.themeDark}</option>
-                <option value="custom">{localeText.settings.themeCustom}</option>
-              </select>
-            </label>
-
-            <label className="field">
-              <span>{localeText.settings.defaultImportMode}</span>
-              <select
-                value={settings.defaultImportMode}
-                onChange={(event) =>
-                  onSettingsChange({ defaultImportMode: event.target.value as PrompterSettings['defaultImportMode'] })
-                }
-              >
-                <option value="relative">{localeText.settings.relativePath}</option>
-                <option value="absolute">{localeText.settings.absolutePath}</option>
-              </select>
-            </label>
           </div>
         </section>
 
@@ -199,6 +176,10 @@ export function SettingsPage({
 
             <div className="settings-log-grid">
               {logSourceOrder.map((source) => {
+                if (source === 'roo-code') {
+                  return null;
+                }
+
                 const logSource = getSafeLogSource(settings, source);
                 return (
                   <div key={source} className="settings-log-card">
@@ -221,16 +202,6 @@ export function SettingsPage({
                   </div>
                 );
               })}
-            </div>
-
-            <div className="settings-danger-zone">
-              <div>
-                <h3>{localeText.settings.cacheHeading}</h3>
-                <p className="workspace-subtitle">{localeText.settings.cacheSubtitle}</p>
-              </div>
-              <button type="button" className="settings-danger-button" onClick={onClearCache}>
-                {localeText.settings.clearCache}
-              </button>
             </div>
           </div>
         </section>

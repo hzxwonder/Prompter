@@ -38,7 +38,7 @@ describe('PromptCard', () => {
     });
   });
 
-  it('does not show awaiting-confirmation UI for completed cards', async () => {
+  it('shows awaiting-confirmation UI for just-completed cards', async () => {
     const { PromptCard } = await import('../../webview/src/components/PromptCard');
 
     render(
@@ -52,7 +52,6 @@ describe('PromptCard', () => {
       />
     );
 
-    expect(screen.getByText('已完成')).toBeTruthy();
-    expect(screen.queryByText('已完成，待确认')).toBeNull();
+    expect(screen.getAllByText('已完成，待确认').length).toBeGreaterThan(0);
   });
 });

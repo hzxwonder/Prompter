@@ -85,7 +85,7 @@ const text = {
     } satisfies Partial<Record<PromptSourceType, string>>,
     settings: {
       generalHeading: '通用',
-      generalSubtitle: '切换界面语言、主题和默认导入方式。',
+      generalSubtitle: '切换界面语言。',
       language: '语言',
       theme: '主题',
       themeSystem: '跟随系统',
@@ -239,7 +239,7 @@ const text = {
     } satisfies Partial<Record<PromptSourceType, string>>,
     settings: {
       generalHeading: 'General',
-      generalSubtitle: 'Choose the interface language, theme, and default import behavior.',
+      generalSubtitle: 'Choose the interface language.',
       language: 'Language',
       theme: 'Theme',
       themeSystem: 'Follow system',

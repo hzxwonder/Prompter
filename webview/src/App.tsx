@@ -10,18 +10,6 @@ import { HistoryPage } from './pages/HistoryPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { ShortcutsPage } from './pages/ShortcutsPage';
 
-function hasDraftContent(draft: { title: string; content: string }): boolean {
-  return Boolean(draft.title.trim() || draft.content.trim());
-}
-
-function buildAutosavePayload(draft: { title: string; content: string; fileRefs: PrompterState['cards'][number]['fileRefs'] }) {
-  return {
-    title: draft.title.trim(),
-    content: draft.content,
-    fileRefs: draft.fileRefs
-  };
-}
-
 export function App({
   initialState,
   lastMessage
@@ -118,28 +106,6 @@ export function App({
       setShortcutSaveState({
         status: 'idle',
         command: null
-      });
-    }
-
-    if (state.activeView === 'workspace' && view !== 'workspace' && hasDraftContent(workspaceDraft)) {
-      shouldCopyAfterManualSaveRef.current = false;
-      if (workspaceDraft.editingCardId && workspaceDraft.editingCardStatus === 'unused') {
-        postMessage({
-          type: 'card:update',
-          payload: { cardId: workspaceDraft.editingCardId, ...buildAutosavePayload(workspaceDraft) }
-        });
-      } else {
-        postMessage({ type: 'draft:autosave', payload: buildAutosavePayload(workspaceDraft) });
-      }
-      // 立即清空草稿，防止用户多次点击导航时重复将同一内容保存到未使用分区。
-      // 内容已保存为卡片，用户可在未使用泳道中双击卡片继续编辑。
-      updateWorkspaceDraft({
-        title: '',
-        content: '',
-        fileRefs: [],
-        editingCardId: undefined,
-        editingCardStatus: undefined,
-        cursorIndex: undefined
       });
     }
 

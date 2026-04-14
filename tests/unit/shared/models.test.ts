@@ -12,6 +12,7 @@ describe('createInitialState', () => {
     expect(state.selectedDate).toBe('2026-04-08');
     expect(state.settings.dataDir).toBe('~/prompter');
     expect(state.settings.theme).toBe('system');
+    expect(state.settings.defaultImportMode).toBe('absolute');
     expect(Object.keys(state.settings.logSources)).toEqual([
       'claude-code',
       'codex',

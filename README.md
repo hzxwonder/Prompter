@@ -9,192 +9,194 @@
 </p>
 
 <p align="center">
-  A practical prompt workspace for VS Code.
+  A prompt workspace for VS Code that turns daily prompt writing into a reusable, trackable workflow.
 </p>
 
 <p align="center">
-  Collect context faster, build better prompts, reuse proven prompt blocks, and keep prompt history organized in one place.
+  Compose prompts faster, copy them out with one click, track running work from Claude Code / Codex / Roo Code, and keep prompt history useful after the session ends.
 </p>
 
 Prompter is built for people who work with AI inside VS Code every day.
 
-Instead of repeatedly copying code selections, file paths, terminal output, and old prompt templates by hand, Prompter gives you one dedicated workspace to prepare prompts, track prompt status, reuse modular snippets, and review prompt history across sessions.
+Instead of repeatedly copying code selections, file paths, terminal output, and half-finished prompt drafts by hand, Prompter gives you one productized workspace to prepare prompts, organize prompt cards, monitor external sessions, and review what happened later.
 
-It is especially useful for workflows involving Codex, Claude Code, Roo Code, Cursor, and similar AI coding tools.
+It works especially well for workflows built around Claude Code, Codex, Roo Code, Cursor, and any other AI tool that starts with a copied prompt.
 
 ## Table of Contents
 
 - [Why Prompter](#why-prompter)
-- [Core Features](#core-features)
-- [Commands and Shortcuts](#commands-and-shortcuts)
-- [A Typical Workflow](#a-typical-workflow)
-- [Session Sync](#session-sync)
-- [Settings and Storage](#settings-and-storage)
-- [Who It Is For](#who-it-is-for)
+- [Highlights](#highlights)
+- [Product Tour](#product-tour)
+  - [Workspace Composer](#workspace-composer)
+  - [Prompt Status](#prompt-status)
+  - [History](#history)
+  - [Shortcuts](#shortcuts)
+  - [Settings](#settings)
+- [External Session Sync](#external-session-sync)
+- [Commands and Default Shortcuts](#commands-and-default-shortcuts)
+- [Storage](#storage)
+- [Local Development](#local-development)
+- [Links](#links)
 
 ## Why Prompter
 
 Prompt work is usually repetitive, fragmented, and easy to lose.
 
-In a normal editor workflow, you often need to:
+A typical coding workflow often looks like this:
 
 - copy code into an AI chat
-- paste file paths manually
-- move terminal output by hand
-- rebuild the same prompt structure from scratch
-- lose a good prompt after one use
-- forget which prompt is still active and which one already finished
+- manually add file paths
+- paste terminal output by hand
+- rebuild the same prompt structure again and again
+- forget which prompt is still running
+- lose useful prompts once the chat is over
 
-Prompter turns that scattered work into a structured workflow inside VS Code.
+Prompter brings that scattered work back into VS Code and turns it into a repeatable workflow.
 
-The goal is simple:
+## Highlights
 
-- reduce context switching
-- reduce repetitive prompt preparation
-- make useful prompts reusable
-- keep prompt activity visible instead of disposable
+- **Draft first, send later.** Write and refine prompts in a dedicated editor before pasting them into an external AI tool.
+- **Save and copy in one step.** Confirming a prompt saves it as a card in `Unused` and copies it to the clipboard immediately.
+- **Keep half-finished ideas.** Start a new blank draft without losing the current one.
+- **Track prompt lifecycle visually.** Move cards across `Unused`, `In Progress`, and `Completed`, or let imported sessions update automatically.
+- **Stay connected to external sessions.** Detect supported Claude Code, Codex, and Roo Code activity from logs and jump back to the source session.
+- **Review prompt work like an activity feed.** Use a GitHub-style history view to revisit what you wrote and used.
 
-## Core Features
+## Product Tour
 
-### Dedicated Prompt Workspace
+### Workspace Composer
 
-Run `Prompter: Open` to open the main workspace.
+The `Workspace` page is the place where prompt writing starts.
 
-Inside the workspace, you can:
+<p align="center">
+  <img src="./assets/workspace.png" alt="Prompter workspace composer" />
+</p>
 
-- draft prompts before sending them
-- manage cards in `Unused`, `Active`, and `Completed`
-- reopen and edit previous prompts
-- keep today's prompt work organized instead of scattered across tabs and chats
+What you can do here:
 
-### Fast Context Import
+- write prompts in Markdown inside a dedicated composer
+- click **Confirm** to save the current prompt into `Unused` and copy it to the clipboard
+- click the trash button to clear the current draft when you no longer need it
+- click the new-page button to open a blank draft while preserving the current content in `Unused`
+- import editor selections, Explorer resources, and terminal selections into the draft so context gathering stays fast
+- keep prompt preparation inside VS Code instead of scattering it across chats and notes
 
-Prompter makes context collection fast enough to use every day.
+This page is optimized for the moment before you send a prompt out.
 
-You can import:
+### Prompt Status
 
-- the current editor selection
-- a file or folder path from Explorer
-- the current terminal selection
-- dropped file paths inside the composer
+Below the composer, Prompter shows a dedicated `Prompt Status` area for prompt cards.
 
-This is one of the most practical parts of the extension because it removes a large amount of manual copy-and-format work.
+<p align="center">
+  <img src="./assets/prompt-status.png" alt="Prompter prompt status board" />
+</p>
 
-### Copy-Ready Prompt Output
+What you can do here:
 
-When you manually confirm a prompt in the workspace:
+- view prompts in **Board** or **List** mode
+- single-click a card to copy it again
+- double-click a card to reopen it in the composer for editing
+- drag cards across `Unused`, `In Progress`, and `Completed`
+- drag a card into the delete zone to remove it quickly
+- rename the group name shown on a card; imported prompts are grouped by session, so renaming the group updates that whole session group
+- expand long prompt cards when the preview is too short
+- jump directly from a card back to the matching Claude Code, Codex, or Roo Code session
 
-- the prompt is saved as a card
-- the content is copied to the clipboard
-- the UI gives explicit copy feedback
+Prompter also keeps imported running prompts visible. When a tracked prompt finishes, it can notify you, play a tone, and highlight the card until you acknowledge it.
 
-This works well when your flow is: prepare locally, then paste into another AI tool immediately.
+### History
 
-### Reusable Modular Prompt Blocks
+The `History` page turns prompt work into something you can actually review.
 
-Prompter supports reusable prompt snippets for recurring work.
+<p align="center">
+  <img src="./assets/history.png" alt="Prompter history page" />
+</p>
 
-You can store prompt blocks for things like:
+What you can do here:
 
-- debugging
-- code review
-- planning
-- summaries
-- root-cause analysis
+- browse prompt activity with a GitHub-style heatmap
+- click a specific day to inspect that day's prompts
+- view prompts grouped by session so the history is easier to scan
+- filter the selected day by `Unused`, `In Progress`, or `Completed`
+- expand a prompt preview to read the full content
+- copy historical prompts back into use
+- inspect associated file references and line ranges for extra context
 
-That means your best prompt patterns stop being one-off text and become reusable building blocks.
+This page is especially useful when you want to understand what you tried, what got reused, and what finished on a given day.
 
-### Prompt History and Daily Review
+### Shortcuts
 
-The `History` page helps turn prompt work into something reviewable.
+The `Shortcuts` page gives Prompter its own built-in shortcut management UI.
 
-You can:
+What you can do here:
 
-- browse prompts by date
-- review daily activity with a heatmap
-- inspect prompt counts by status
-- copy previous prompts back into use
-- trace prompts by source and grouping
+- review the current shortcut for each Prompter command
+- record a new shortcut without editing `keybindings.json` by hand
+- reset any command back to its default binding
+- keep the main entry and all import actions easy to trigger from your normal workflow
 
-### Built-in Shortcut Management
+Today the shortcut page focuses on four core actions:
 
-Prompter includes a dedicated `Shortcuts` page, so shortcut editing is part of the product instead of hidden inside `keybindings.json`.
+- opening Prompter
+- importing the current editor selection
+- importing a selected file or folder from Explorer
+- importing the current terminal selection
 
-You can:
+## Settings
 
-- inspect current bindings
-- record new shortcuts
-- reset shortcuts to defaults
-- keep import actions aligned across editor, Explorer, and terminal contexts
+The `Settings` page controls how Prompter behaves in day-to-day use.
 
-### Activity Bar Entry
+What you can configure here:
 
-Prompter adds its own icon to the VS Code Activity Bar.
+- interface language
+- theme mode
+- default import path format
+- prompt completion notifications
+- completion tone, including a custom audio file path
+- data directory
+- log source paths and toggles for Claude Code, Codex, and Roo Code
+- whether existing data should be migrated when switching data directories
+- cache clearing for the local workspace state
 
-That gives users a persistent entry point to the extension and a fast way to open the main workspace.
+This lets Prompter fit different environments, different log layouts, and different notification preferences.
 
-## Commands and Shortcuts
+## External Session Sync
+
+Prompter can import supported prompt activity from external coding-agent logs.
+
+Supported sources:
+
+- Claude Code
+- Codex
+- Roo Code
+
+Once log sync is enabled and the paths are configured in `Settings`, Prompter can:
+
+- detect imported prompts from those sessions
+- group them by session
+- keep running prompts visible in the workspace
+- mark prompts as completed when the source session finishes
+- highlight freshly completed prompts until you acknowledge them
+- open the matching external session again from the prompt card
+
+This is what makes Prompter more than a local scratchpad. It becomes a control surface for prompts that continue running outside the editor.
+
+## Commands and Default Shortcuts
 
 | Command | Purpose | Default Shortcut |
 | --- | --- | --- |
 | `Prompter: Open` | Open the Prompter workspace | `Ctrl+E` |
 | `Prompter: Open Shortcuts` | Open the built-in shortcuts page | None |
 | `Prompter: Import Selection to Prompt` | Import the current editor selection | `Ctrl+Shift+F` |
-| `Prompter: Add Resource to Prompt` | Import the selected Explorer resource | `Ctrl+Shift+F` |
+| `Prompter: Add Resource to Prompt` | Import the selected Explorer file or folder | `Ctrl+Shift+F` |
 | `Prompter: Import Terminal Selection` | Import the current terminal selection | `Ctrl+Shift+F` |
 
 Notes:
 
-- The three import commands share the same default shortcut because they run in different contexts.
-- Shortcuts can be changed from the built-in `Shortcuts` page.
+- The three import commands intentionally share the same default shortcut because they run in different VS Code contexts.
+- Prompter also adds an Activity Bar entry so the workspace stays easy to reopen.
 
-## A Typical Workflow
-
-One practical flow looks like this:
-
-1. Open `Prompter: Open`.
-2. Import the code selection you want to discuss.
-3. Add file paths or terminal output if more context is needed.
-4. Insert reusable prompt blocks for review, debugging, planning, or summary.
-5. Confirm the prompt and copy it out.
-6. Send it to Codex, Claude Code, Cursor, Roo Code, or any other AI tool.
-
-The value is not just having another panel.
-
-The value is making prompt work faster, cleaner, and repeatable.
-
-## Session Sync
-
-Prompter can sync imported prompt activity from supported external log sources:
-
-- Claude Code
-- Codex
-- Roo Code
-
-That allows the workspace and history views to reflect more than manual drafts.
-
-Prompter can track:
-
-- session-based imported prompts
-- prompt lifecycle changes
-- completed prompts
-- grouping by session
-- daily prompt history
-
-This is useful when part of your workflow happens in external agent sessions but you still want one place to review the prompt trail.
-
-## Settings and Storage
-
-The `Settings` page lets users control:
-
-- language
-- theme mode
-- default import path format
-- completion notifications
-- completion sound
-- data directory
-- log source paths and toggles
-- whether existing data should be migrated when switching directories
+## Storage
 
 By default, Prompter stores data in `~/prompter`.
 
@@ -205,18 +207,19 @@ Main files include:
 - `daily-stats.json`
 - `settings.json`
 - `session-groups.json`
+- `modular-prompts.json`
 
-## Who It Is For
+## Local Development
 
-Prompter is useful if you regularly:
-
-- write prompts for coding agents
-- reuse the same prompt patterns
-- gather context from code, files, and terminal output
-- want better visibility into prompt status
-- want prompt history to stay useful after the session ends
+```bash
+npm install
+npm run build
+npm test
+npm run lint
+```
 
 ## Links
 
 - GitHub: <https://github.com/hzxwonder/Prompter>
 - Chinese README: [README.zh-CN.md](./README.zh-CN.md)
+- License: [LICENSE.md](./LICENSE.md)

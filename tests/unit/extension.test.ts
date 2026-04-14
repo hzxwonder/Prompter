@@ -161,7 +161,7 @@ describe('activate', () => {
     expect(postMessage).toHaveBeenCalledWith({
       type: 'composer:insertText',
       payload: {
-        text: 'File: src/from-active-editor.ts',
+        text: 'File: /workspace/src/from-active-editor.ts',
         fileRefs: [{ path: '/workspace/src/from-active-editor.ts' }]
       }
     });
@@ -188,7 +188,7 @@ describe('activate', () => {
     expect(postMessage).toHaveBeenCalledWith({
       type: 'composer:insertText',
       payload: {
-        text: 'File: src/components',
+        text: 'File: /workspace/src/components',
         fileRefs: [{ path: '/workspace/src/components' }]
       }
     });

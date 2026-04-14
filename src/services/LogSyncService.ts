@@ -14,17 +14,7 @@ const BUILTIN_TONES = new Set<string>(['soft-bell', 'chime', 'ding']);
 
 const WATCH_ROOTS = [
   path.join(homedir(), '.claude', 'projects'),
-  path.join(homedir(), '.codex', 'sessions'),
-  path.join(
-    homedir(),
-    'Library',
-    'Application Support',
-    'Cursor',
-    'User',
-    'globalStorage',
-    'rooveterinaryinc.roo-cline',
-    'tasks'
-  )
+  path.join(homedir(), '.codex', 'sessions')
 ];
 const AUTO_COMPLETE_AFTER_MS = 2 * 60 * 60 * 1000;
 const AWAITING_CONFIRMATION_MS = 20 * 60 * 1000;
@@ -338,7 +328,11 @@ export class LogSyncService {
 
       const lastModIso = new Date(lastModMs).toISOString();
       if (!card.lastActiveAt || lastModIso > card.lastActiveAt) {
-        await this.repository.updateCardLastActiveAt(card.sourceRef, lastModIso);
+        const sourceRef = card.sourceRef;
+        if (!sourceRef) {
+          continue;
+        }
+        await this.repository.updateCardLastActiveAt(sourceRef, lastModIso);
         changed = true;
       }
     }
