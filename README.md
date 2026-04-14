@@ -1,7 +1,7 @@
 # Prompter
 
 <p align="center">
-  <img src="https://via.placeholder.com/500" width="300" alt="示例图"/>
+  <img src="icon.png" width="300" alt="示例图"/>
 </p>
 
 Prompter is a VS Code extension for one practical job: collecting context, shaping prompts, and keeping prompt work reusable instead of disposable.

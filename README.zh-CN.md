@@ -1,7 +1,7 @@
 # Prompter
 
 <p align="center">
-  <img src="https://via.placeholder.com/500" width="300" alt="示例图"/>
+  <img src="icon.png" width="300" alt="示例图"/>
 </p>
 
 Prompter 是一个面向日常 AI 协作工作流的 VS Code 插件。它的核心目标很直接：把“找上下文、拼 Prompt、保存草稿、回看历史、重复利用高频片段”这些本来零散又高频的动作，收进同一个工作面板里。
