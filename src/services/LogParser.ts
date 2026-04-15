@@ -333,6 +333,9 @@ export function resolvePromptStatuses(
       if (prompt.source !== row.source || prompt.sessionId !== row.sessionId) {
         return false;
       }
+      if (row.source === 'codex' && prompt.sourceRef === row.sourceRef) {
+        return true;
+      }
       if (prompt.userInput !== row.userInput) {
         return false;
       }

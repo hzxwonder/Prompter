@@ -3,7 +3,7 @@ import { exec } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { homedir } from 'node:os';
-import { toDateBucket, type BuiltinTone } from '../shared/models';
+import { toDateBucket, type BuiltinTone, type HistoryImportEntry } from '../shared/models';
 import { getLocaleText } from '../shared/i18n';
 import type { PromptRepository } from '../state/PromptRepository';
 import { PrompterPanel } from '../panel/PrompterPanel';
@@ -26,7 +26,18 @@ interface ImportPromptOptions {
   skipNotify?: boolean;
 }
 
+interface ParserSyncResult {
+  inserted: LogPrompt[];
+  justCompletedSourceRefs: string[];
+  silentlyCompletedSourceRefs: string[];
+}
+
+function logSessionKey(source: LogPrompt['source'], sessionId: string): string {
+  return `${source}:${sessionId}`;
+}
+
 export class LogSyncService {
+  private readonly historyWorkerCount = 3;
   private intervalId: NodeJS.Timeout | null = null;
   private midnightTimeoutId: NodeJS.Timeout | null = null;
   private watchDebounceId: NodeJS.Timeout | null = null;
@@ -34,6 +45,9 @@ export class LogSyncService {
   private syncInFlight = false;
   private syncQueued = false;
   private initialImportInFlight = false;
+  private historyBackfillInFlight = false;
+  private pauseHistoryRequested = false;
+  private foregroundBusyUntil = 0;
   private parser: LogParser;
 
   constructor(
@@ -84,6 +98,154 @@ export class LogSyncService {
     log('[LogSyncService] 已停止');
   }
 
+  markUserActivity(durationMs = 2000): void {
+    this.foregroundBusyUntil = Math.max(this.foregroundBusyUntil, Date.now() + durationMs);
+  }
+
+  async runHistoryBackfill(): Promise<void> {
+    if (this.historyBackfillInFlight) {
+      return;
+    }
+
+    const state = await this.repository.getState();
+    if (state.historyImport.pendingEntries.length === 0) {
+      await this.repository.setHistoryImport({
+        scope: 'history-backfill',
+        status: 'complete',
+        foregroundReady: true
+      });
+      return;
+    }
+
+    const todayBucket = new Date().toISOString().slice(0, 10);
+    const entryMap = new Map<string, LogSessionScanEntry>(
+      this.parser
+        .discoverScanEntries()
+        .filter((entry) => entry.dateBucket !== todayBucket)
+        .map((entry) => [`${entry.source}:${entry.path}`, entry] as const)
+    );
+    const runningSessions = this.parser.getRunningSessionsSnapshot();
+    const pendingEntries = [...state.historyImport.pendingEntries];
+    const pendingEntryMap = new Map(pendingEntries.map((entry) => [entry.id, entry] as const));
+    const completedEntries = [...state.historyImport.completedEntries];
+    let processedPrompts = state.historyImport.processedPrompts;
+    let nextIndex = 0;
+    let mutationQueue = Promise.resolve();
+
+    const scheduleMutation = async (fn: () => Promise<void>) => {
+      mutationQueue = mutationQueue.then(fn);
+      await mutationQueue;
+    };
+
+    const claimNext = (): HistoryImportEntry | undefined => {
+      if (this.pauseHistoryRequested || nextIndex >= pendingEntries.length) {
+        return undefined;
+      }
+
+      const nextEntry = pendingEntries[nextIndex];
+      nextIndex += 1;
+      return nextEntry;
+    };
+
+    this.pauseHistoryRequested = false;
+    this.historyBackfillInFlight = true;
+    await this.repository.setHistoryImport({
+      scope: 'history-backfill',
+      status: 'running',
+      foregroundReady: true,
+      lastError: undefined
+    });
+
+    try {
+      const workers = Array.from({ length: Math.min(this.historyWorkerCount, pendingEntries.length) }, async () => {
+        while (!this.pauseHistoryRequested) {
+          const checkpoint = claimNext();
+          if (!checkpoint) {
+            return;
+          }
+
+          const entry = entryMap.get(checkpoint.id);
+          if (!entry) {
+            await scheduleMutation(async () => {
+              pendingEntryMap.delete(checkpoint.id);
+              completedEntries.push(checkpoint.id);
+              await this.repository.setHistoryImport({
+                scope: 'history-backfill',
+                status: 'running',
+                processedSources: completedEntries.length,
+                totalSources: completedEntries.length + pendingEntryMap.size,
+                processedPrompts,
+                pendingEntries: [...pendingEntryMap.values()],
+                completedEntries
+              });
+            });
+            continue;
+          }
+
+          try {
+            const promptCount = await this.importEntry(entry, runningSessions, {
+              foregroundOnly: true,
+              todayBucket,
+              skipRefresh: true,
+              skipNotify: true
+            });
+
+            await scheduleMutation(async () => {
+              processedPrompts += promptCount;
+              pendingEntryMap.delete(checkpoint.id);
+              completedEntries.push(checkpoint.id);
+              await this.repository.setHistoryImport({
+                scope: 'history-backfill',
+                status: 'running',
+                foregroundReady: true,
+                processedPrompts,
+                processedSources: completedEntries.length,
+                totalSources: completedEntries.length + pendingEntryMap.size,
+                pendingEntries: [...pendingEntryMap.values()],
+                completedEntries
+              });
+              await PrompterPanel.refresh(this.repository);
+            });
+          } catch (error) {
+            this.pauseHistoryRequested = true;
+            await scheduleMutation(async () => {
+              await this.repository.setHistoryImport({
+                scope: 'history-backfill',
+                status: 'paused',
+                foregroundReady: true,
+                lastError: error instanceof Error ? error.message : String(error),
+                pendingEntries: [...pendingEntryMap.values()],
+                completedEntries
+              });
+            });
+          }
+        }
+      });
+
+      await Promise.all(workers);
+      await mutationQueue;
+    } finally {
+      this.historyBackfillInFlight = false;
+      const latestState = await this.repository.getState();
+      await this.repository.setHistoryImport({
+        scope: 'history-backfill',
+        status: latestState.historyImport.pendingEntries.length === 0 ? 'complete' : (this.pauseHistoryRequested ? 'paused' : latestState.historyImport.status),
+        foregroundReady: true
+      });
+      await PrompterPanel.refresh(this.repository);
+    }
+  }
+
+  async pauseHistoryBackfill(): Promise<void> {
+    this.pauseHistoryRequested = true;
+    const state = await this.repository.getState();
+    await this.repository.setHistoryImport({
+      scope: 'history-backfill',
+      status: state.historyImport.pendingEntries.length === 0 ? 'complete' : 'paused',
+      foregroundReady: true
+    });
+  }
+
   private async startInitialImportIfNeeded(): Promise<void> {
     const state = await this.repository.getState();
     const hasImportedCards = state.cards.some(
@@ -91,6 +253,7 @@ export class LogSyncService {
     );
 
     if (hasImportedCards || this.parser.hasPersistedPrompts()) {
+      await this.prepareHistoryBackfill();
       await this.requestSync();
       return;
     }
@@ -98,9 +261,11 @@ export class LogSyncService {
     this.initialImportInFlight = true;
 
     try {
-      await this.runStagedInitialImport();
+      await this.bootstrapTodayImport();
+      await this.prepareHistoryBackfill();
     } catch (error) {
       logError('[LogSyncService] 首次历史导入失败，回退到普通同步', error);
+      await this.prepareHistoryBackfill();
       await this.requestSync();
     } finally {
       this.initialImportInFlight = false;
@@ -180,24 +345,36 @@ export class LogSyncService {
     }
   }
 
-  private async runStagedInitialImport(): Promise<void> {
+  private buildHistoryImportEntry(entry: LogSessionScanEntry): HistoryImportEntry {
+    return {
+      id: `${entry.source}:${entry.path}`,
+      sourceType: entry.source,
+      filePath: entry.path,
+      dateBucket: entry.dateBucket
+    };
+  }
+
+  private async bootstrapTodayImport(): Promise<void> {
     const todayBucket = new Date().toISOString().slice(0, 10);
-    const entries = this.parser.discoverScanEntries();
+    const entries = this.parser.discoverScanEntries().filter((entry) => entry.dateBucket === todayBucket);
     const runningSessions = this.parser.getRunningSessionsSnapshot();
-    const todayEntries = entries.filter((entry) => entry.dateBucket === todayBucket);
-    const historyEntries = entries.filter((entry) => entry.dateBucket !== todayBucket);
     let processedPrompts = 0;
     let processedSources = 0;
 
     await this.publishHistoryImportProgress({
-      phase: 'scanning-today',
+      scope: 'today-bootstrap',
+      status: 'running',
       processedPrompts,
       processedSources,
       totalSources: entries.length,
-      foregroundReady: false
+      foregroundReady: false,
+      warningAcknowledged: false,
+      pendingEntries: [],
+      completedEntries: []
     });
 
-    for (const entry of todayEntries) {
+    for (const entry of entries) {
+      await this.waitForForegroundIdle();
       processedPrompts += await this.importEntry(entry, runningSessions, {
         foregroundOnly: true,
         todayBucket,
@@ -206,52 +383,57 @@ export class LogSyncService {
       });
       processedSources += 1;
       await this.publishHistoryImportProgress({
-        phase: 'scanning-today',
+        scope: 'today-bootstrap',
+        status: 'running',
         processedPrompts,
         processedSources,
         totalSources: entries.length,
-        foregroundReady: false
+        foregroundReady: false,
+        warningAcknowledged: false,
+        pendingEntries: [],
+        completedEntries: []
       });
     }
 
     await this.publishHistoryImportProgress({
-      phase: historyEntries.length > 0 ? 'scanning-history' : 'complete',
-      processedPrompts,
-      processedSources,
-      totalSources: entries.length,
-      foregroundReady: true
-    });
-    await PrompterPanel.refresh(this.repository);
-
-    for (const entry of historyEntries) {
-      processedPrompts += await this.importEntry(entry, runningSessions, {
-        foregroundOnly: true,
-        todayBucket,
-        skipRefresh: true,
-        skipNotify: true
-      });
-      processedSources += 1;
-      await this.publishHistoryImportProgress({
-        phase: 'scanning-history',
-        processedPrompts,
-        processedSources,
-        totalSources: entries.length,
-        foregroundReady: true
-      });
-      await PrompterPanel.refresh(this.repository);
-      await this.pauseForUi();
-    }
-
-    await this.publishHistoryImportProgress({
-      phase: 'complete',
+      scope: 'today-bootstrap',
+      status: 'idle',
       processedPrompts,
       totalPrompts: processedPrompts,
       processedSources,
       totalSources: entries.length,
-      foregroundReady: true
+      foregroundReady: true,
+      warningAcknowledged: false,
+      pendingEntries: [],
+      completedEntries: []
     });
     await PrompterPanel.refresh(this.repository);
-    await this.requestSync();
+  }
+
+  private async prepareHistoryBackfill(): Promise<void> {
+    const state = await this.repository.getState();
+    const todayBucket = new Date().toISOString().slice(0, 10);
+    const entries = this.parser.discoverScanEntries().filter((entry) => entry.dateBucket !== todayBucket);
+    const completedEntries = state.historyImport.completedEntries ?? [];
+    const completedEntrySet = new Set(completedEntries);
+    const pendingEntries = entries
+      .map((entry) => this.buildHistoryImportEntry(entry))
+      .filter((entry) => !completedEntrySet.has(entry.id));
+
+    await this.publishHistoryImportProgress({
+      scope: 'history-backfill',
+      status: pendingEntries.length === 0 ? 'complete' : (state.historyImport.status === 'paused' ? 'paused' : 'idle'),
+      processedPrompts: state.historyImport.processedPrompts,
+      totalPrompts: state.historyImport.totalPrompts,
+      processedSources: completedEntries.length,
+      totalSources: completedEntries.length + pendingEntries.length,
+      foregroundReady: true,
+      warningAcknowledged: state.historyImport.warningAcknowledged,
+      pendingEntries,
+      completedEntries,
+      lastError: undefined
+    });
+    await PrompterPanel.refresh(this.repository);
   }
 
   private async publishHistoryImportProgress(progress: Awaited<ReturnType<PromptRepository['getState']>>['historyImport']): Promise<void> {
@@ -265,20 +447,48 @@ export class LogSyncService {
   ): Promise<number> {
     const prompts = this.parser.scanEntry(entry);
     const { inserted } = this.parser.applySessionScan(prompts, runningSessions);
-
-    for (const prompt of inserted) {
-      await this.handleNewPrompt(prompt, {
-        ...options,
-        skipRefresh: true,
-        skipNotify: true
-      });
+    const cardsToSave = inserted.map((prompt) => this.buildImportedCardInput(prompt, options));
+    if (cardsToSave.length > 0) {
+      await this.repository.saveImportedCards(cardsToSave);
     }
 
     return prompts.length;
   }
 
-  private pauseForUi(): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, 0));
+  private pauseForUi(delayMs = 0): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+
+  private async waitForForegroundIdle(): Promise<void> {
+    while (Date.now() < this.foregroundBusyUntil) {
+      await this.pauseForUi(Math.min(50, this.foregroundBusyUntil - Date.now()));
+    }
+  }
+
+  private buildImportedCardInput(prompt: LogPrompt, options: ImportPromptOptions) {
+    const promptBucket = toDateBucket(prompt.createdAt);
+    const shouldDemoteBackgroundActivePrompt =
+      options.foregroundOnly &&
+      options.todayBucket !== undefined &&
+      promptBucket !== options.todayBucket &&
+      prompt.status === 'running';
+    const nextStatus = shouldDemoteBackgroundActivePrompt
+      ? 'completed'
+      : (prompt.status === 'running' ? 'active' : 'completed');
+    const nextRuntimeState = shouldDemoteBackgroundActivePrompt
+      ? 'finished'
+      : (prompt.status === 'running' ? 'running' : 'finished');
+
+    return {
+      title: prompt.userInput.slice(0, 50) + (prompt.userInput.length > 50 ? '...' : ''),
+      content: prompt.userInput,
+      groupName: prompt.source === 'claude-code' ? prompt.sessionId : (prompt.project || prompt.sessionId),
+      sourceType: prompt.source,
+      sourceRef: prompt.sourceRef,
+      status: nextStatus,
+      runtimeState: nextRuntimeState,
+      createdAt: prompt.createdAt
+    } satisfies Parameters<PromptRepository['saveImportedCard']>[0];
   }
 
   /**
@@ -310,7 +520,14 @@ export class LogSyncService {
 
   private async sync(): Promise<void> {
     try {
-      const { inserted: newPrompts, justCompletedSourceRefs, silentlyCompletedSourceRefs } = this.parser.sync();
+      const state = await this.repository.getState();
+      const {
+        inserted: newPrompts,
+        justCompletedSourceRefs,
+        silentlyCompletedSourceRefs
+      } = this.shouldRestrictIncrementalSync(state)
+        ? this.syncForegroundSessionsOnly()
+        : this.parser.sync();
 
       for (const prompt of newPrompts) {
         await this.handleNewPrompt(prompt);
@@ -373,6 +590,48 @@ export class LogSyncService {
     } catch (error) {
       logError('[LogSyncService] 同步失败', error);
     }
+  }
+
+  private shouldRestrictIncrementalSync(
+    state: Awaited<ReturnType<PromptRepository['getState']>>
+  ): boolean {
+    return state.historyImport.scope === 'history-backfill' && state.historyImport.pendingEntries.length > 0;
+  }
+
+  private syncForegroundSessionsOnly(): ParserSyncResult {
+    const todayBucket = new Date().toISOString().slice(0, 10);
+    const runningSessions = this.parser.getRunningSessionsSnapshot();
+    const inserted: LogPrompt[] = [];
+    const justCompletedSourceRefs = new Set<string>();
+    const silentlyCompletedSourceRefs = new Set<string>();
+
+    const eligibleEntries = this.parser
+      .discoverScanEntries()
+      .filter(
+        (entry) =>
+          entry.dateBucket === todayBucket ||
+          runningSessions.has(logSessionKey(entry.source, entry.sessionId))
+      );
+
+    for (const entry of eligibleEntries) {
+      const prompts = this.parser.scanEntry(entry).filter(
+        (prompt) => toDateBucket(prompt.createdAt) === todayBucket || !prompt.completedAt
+      );
+      const result = this.parser.applySessionScan(prompts, runningSessions);
+      inserted.push(...result.inserted);
+      for (const sourceRef of result.justCompletedSourceRefs) {
+        justCompletedSourceRefs.add(sourceRef);
+      }
+      for (const sourceRef of result.silentlyCompletedSourceRefs) {
+        silentlyCompletedSourceRefs.add(sourceRef);
+      }
+    }
+
+    return {
+      inserted,
+      justCompletedSourceRefs: [...justCompletedSourceRefs],
+      silentlyCompletedSourceRefs: [...silentlyCompletedSourceRefs]
+    };
   }
 
   private async reconcileStaleActiveCards(): Promise<void> {
@@ -491,35 +750,7 @@ export class LogSyncService {
       await this.completePreviousSameSessionPrompts(state, prompt);
     }
 
-    const promptBucket = toDateBucket(prompt.createdAt);
-    const shouldDemoteBackgroundActivePrompt =
-      options.foregroundOnly &&
-      options.todayBucket !== undefined &&
-      promptBucket !== options.todayBucket &&
-      prompt.status === 'running';
-    const nextStatus = shouldDemoteBackgroundActivePrompt
-      ? 'completed'
-      : (prompt.status === 'running' ? 'active' : 'completed');
-    const nextRuntimeState = shouldDemoteBackgroundActivePrompt
-      ? 'finished'
-      : (prompt.status === 'running' ? 'running' : 'finished');
-
-    // 创建卡片（传递原始日志时间戳，保证泳道排序准确）
-    const card = await this.repository.saveImportedCard({
-      title: prompt.userInput.slice(0, 50) + (prompt.userInput.length > 50 ? '...' : ''),
-      content: prompt.userInput,
-      // claude-code 的 project 字段是 URL 编码的路径（如 -Users-xxx-myproject），可读性差；
-      // 统一使用 sessionId 作为分组名，每个对话 session 独立成组。
-      // codex / roo-code 保留原来的 project || sessionId 逻辑。
-      groupName: prompt.source === 'claude-code'
-        ? prompt.sessionId
-        : (prompt.project || prompt.sessionId),
-      sourceType: prompt.source,
-      sourceRef: prompt.sourceRef,
-      status: nextStatus,
-      runtimeState: nextRuntimeState,
-      createdAt: prompt.createdAt
-    });
+    const card = await this.repository.saveImportedCard(this.buildImportedCardInput(prompt, options));
 
     if (!options.skipRefresh) {
       await PrompterPanel.refresh(this.repository);

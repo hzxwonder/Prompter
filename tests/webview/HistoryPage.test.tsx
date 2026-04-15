@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HistoryPage } from '../../webview/src/pages/HistoryPage';
@@ -118,12 +118,16 @@ describe('HistoryPage', () => {
   it('shows import progress while history is still being indexed', () => {
     const state = createHistoryState();
     state.historyImport = {
-      phase: 'scanning-history',
+      scope: 'history-backfill',
+      status: 'running',
       processedPrompts: 40,
       totalPrompts: 100,
       processedSources: 2,
       totalSources: 5,
-      foregroundReady: true
+      foregroundReady: true,
+      warningAcknowledged: false,
+      pendingEntries: [],
+      completedEntries: []
     };
 
     render(
@@ -139,5 +143,108 @@ describe('HistoryPage', () => {
     expect(screen.getByRole('progressbar', { name: '历史导入进度' })).toHaveAttribute('aria-valuenow', '40');
     expect(screen.getByText('历史导入中')).toBeInTheDocument();
     expect(screen.getByText('已处理 40 / 100 条 prompt')).toBeInTheDocument();
+  });
+
+  it('shows a start button when historical backfill is pending', async () => {
+    const user = userEvent.setup();
+    const state = createHistoryState();
+    const onStartHistoryImport = vi.fn();
+    state.historyImport = {
+      ...state.historyImport,
+      scope: 'history-backfill',
+      status: 'idle',
+      foregroundReady: true,
+      warningAcknowledged: false,
+      pendingEntries: [
+        {
+          id: 'codex:/tmp/old.jsonl',
+          sourceType: 'codex',
+          filePath: '/tmp/old.jsonl',
+          dateBucket: '2026-04-07'
+        }
+      ],
+      completedEntries: []
+    };
+
+    render(
+      <HistoryPage
+        historyImport={state.historyImport}
+        dailyStats={state.dailyStats}
+        cards={state.cards}
+        selectedDate={state.selectedDate}
+        onSelectDate={() => {}}
+        onStartHistoryImport={onStartHistoryImport}
+        onPauseHistoryImport={() => {}}
+      />
+    );
+
+    expect(screen.getByText('今日 prompt 已自动加载到工作台。')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '开始' }));
+    expect(onStartHistoryImport).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows a pause button while historical backfill is running', async () => {
+    const user = userEvent.setup();
+    const state = createHistoryState();
+    const onPauseHistoryImport = vi.fn();
+    state.historyImport = {
+      ...state.historyImport,
+      scope: 'history-backfill',
+      status: 'running',
+      foregroundReady: true,
+      warningAcknowledged: true,
+      pendingEntries: [
+        {
+          id: 'codex:/tmp/old.jsonl',
+          sourceType: 'codex',
+          filePath: '/tmp/old.jsonl',
+          dateBucket: '2026-04-07'
+        }
+      ],
+      completedEntries: []
+    };
+
+    render(
+      <HistoryPage
+        historyImport={state.historyImport}
+        dailyStats={state.dailyStats}
+        cards={state.cards}
+        selectedDate={state.selectedDate}
+        onSelectDate={() => {}}
+        onStartHistoryImport={() => {}}
+        onPauseHistoryImport={onPauseHistoryImport}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: '暂停' }));
+    expect(onPauseHistoryImport).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables the history import button after all history is processed', () => {
+    const state = createHistoryState();
+    state.historyImport = {
+      ...state.historyImport,
+      scope: 'history-backfill',
+      status: 'complete',
+      foregroundReady: true,
+      warningAcknowledged: true,
+      pendingEntries: [],
+      completedEntries: ['codex:/tmp/old.jsonl']
+    };
+
+    render(
+      <HistoryPage
+        historyImport={state.historyImport}
+        dailyStats={state.dailyStats}
+        cards={state.cards}
+        selectedDate={state.selectedDate}
+        onSelectDate={() => {}}
+        onStartHistoryImport={() => {}}
+        onPauseHistoryImport={() => {}}
+      />
+    );
+
+    expect(screen.getByRole('button', { name: '开始' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '开始' })).toHaveAttribute('title', '历史数据已经完全处理完毕');
   });
 });

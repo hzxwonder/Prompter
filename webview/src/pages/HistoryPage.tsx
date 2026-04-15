@@ -205,7 +205,9 @@ export function HistoryPage({
   dailyStats,
   cards,
   selectedDate,
-  onSelectDate
+  onSelectDate,
+  onStartHistoryImport,
+  onPauseHistoryImport
 }: {
   language?: PrompterSettings['language'];
   historyImport?: HistoryImportState;
@@ -213,6 +215,8 @@ export function HistoryPage({
   cards: PromptCard[];
   selectedDate?: string;
   onSelectDate: (date: string) => void;
+  onStartHistoryImport?: () => void;
+  onPauseHistoryImport?: () => void;
 }) {
   const localeText = getLocaleText(language);
   const totalForProgress = historyImport?.totalPrompts ?? historyImport?.totalSources ?? 0;
@@ -247,10 +251,70 @@ export function HistoryPage({
   const toggleFilter = (status: PromptCard['status']) => {
     setStatusFilter((prev) => (prev === status ? null : status));
   };
+  const isHistoryBackfill = historyImport?.scope === 'history-backfill';
+  const isHistoryImportRunning = historyImport?.status === 'running';
+  const isHistoryImportComplete = historyImport?.status === 'complete';
+  const hasPendingHistory = (historyImport?.pendingEntries.length ?? 0) > 0;
+  const shouldShowHistoryImportControl = Boolean(historyImport && isHistoryBackfill && (hasPendingHistory || isHistoryImportRunning || isHistoryImportComplete));
 
   return (
     <div className="history-page">
-      {historyImport && historyImport.phase !== 'idle' && historyImport.phase !== 'complete' && (
+      {shouldShowHistoryImportControl && historyImport && (
+        <section className="history-import-progress" aria-label={localeText.history.importProgressLabel}>
+          <div className="history-import-progress__header">
+            <div>
+              <h2>{localeText.history.importInProgressTitle}</h2>
+              <p className="workspace-subtitle">
+                {historyImport.foregroundReady ? localeText.history.importReadySummary : localeText.history.importBackfillSummary}
+              </p>
+            </div>
+            <button
+              type="button"
+              className={[
+                'history-import-progress__button',
+                isHistoryImportRunning ? 'history-import-progress__button--pause' : '',
+                isHistoryImportComplete ? 'history-import-progress__button--complete' : ''
+              ].filter(Boolean).join(' ')}
+              disabled={isHistoryImportComplete}
+              title={isHistoryImportComplete ? localeText.history.importCompletedTooltip : undefined}
+              onClick={() => {
+                if (isHistoryImportRunning) {
+                  onPauseHistoryImport?.();
+                  return;
+                }
+                onStartHistoryImport?.();
+              }}
+            >
+              {isHistoryImportRunning ? localeText.history.importPause : localeText.history.importStart}
+            </button>
+          </div>
+          <span className="history-import-progress__meta">
+            {localeText.history.importProcessedSources(historyImport.processedSources, historyImport.totalSources)}
+          </span>
+          <div
+            className="history-import-progress__bar"
+            role="progressbar"
+            aria-label={localeText.history.importProgressLabel}
+            aria-valuemin={0}
+            aria-valuemax={totalForProgress || 100}
+            aria-valuenow={valueNow}
+          >
+            <div
+              className="history-import-progress__fill"
+              style={{
+                width: `${Math.max(
+                  totalForProgress > 0 && valueNow != null ? (valueNow / totalForProgress) * 100 : 8,
+                  8
+                )}%`
+              }}
+            />
+          </div>
+          <p className="history-import-progress__summary">
+            {localeText.history.importProcessedPrompts(historyImport.processedPrompts, historyImport.totalPrompts)}
+          </p>
+        </section>
+      )}
+      {historyImport && !isHistoryBackfill && historyImport.status !== 'idle' && historyImport.status !== 'complete' && (
         <section className="history-import-progress" aria-label={localeText.history.importProgressLabel}>
           <div className="history-import-progress__header">
             <div>

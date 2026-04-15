@@ -240,6 +240,358 @@ describe('LogSyncService', () => {
     );
   });
 
+  it('prepares historical backfill without executing it during activation', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    const todayBucket = new Date().toISOString().slice(0, 10);
+
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      setHistoryImport: vi.fn().mockResolvedValue(undefined),
+      saveImportedCards: vi.fn().mockResolvedValue([])
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const parser = (service as any).parser;
+    parser.hasPersistedPrompts = vi.fn(() => false);
+    parser.discoverScanEntries = vi.fn(() => [
+      {
+        source: 'codex',
+        sessionId: 'today-session',
+        path: '/tmp/today.jsonl',
+        dateBucket: todayBucket,
+        lastModifiedMs: Date.parse('2026-04-08T10:00:00.000Z')
+      },
+      {
+        source: 'codex',
+        sessionId: 'old-session',
+        path: '/tmp/old.jsonl',
+        dateBucket: '2026-04-07',
+        lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
+      }
+    ]);
+    parser.getRunningSessionsSnapshot = vi.fn(() => new Set<string>());
+    parser.scanEntry = vi.fn(() => [
+      {
+        source: 'codex',
+        sessionId: 'today-session',
+        sourceRef: 'today-session:turn-1',
+        project: 'today-session',
+        userInput: 'Keep workspace responsive.',
+        createdAt: `${todayBucket}T10:00:00.000Z`,
+        status: 'running'
+      }
+    ]);
+    parser.applySessionScan = vi.fn((prompts) => ({ inserted: prompts }));
+
+    await (service as any).startInitialImportIfNeeded();
+
+    expect(repository.saveImportedCards).toHaveBeenCalledTimes(1);
+    expect(repository.setHistoryImport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: 'history-backfill',
+        status: 'idle',
+        pendingEntries: [
+          {
+            id: 'codex:/tmp/old.jsonl',
+            sourceType: 'codex',
+            filePath: '/tmp/old.jsonl',
+            dateBucket: '2026-04-07'
+          }
+        ]
+      })
+    );
+  });
+
+  it('imports only today prompts and unfinished prompts from running old sessions while backfill is still pending', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    const todayBucket = new Date().toISOString().slice(0, 10);
+    state.historyImport = {
+      ...state.historyImport,
+      scope: 'history-backfill',
+      status: 'idle',
+      foregroundReady: true,
+      pendingEntries: [
+        {
+          id: 'codex:/tmp/old.jsonl',
+          sourceType: 'codex',
+          filePath: '/tmp/old.jsonl',
+          dateBucket: '2026-04-07'
+        }
+      ],
+      completedEntries: []
+    };
+
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      saveImportedCard: vi.fn().mockResolvedValue({
+        id: 'card-1',
+        title: 'Imported prompt'
+      }),
+      autoCompleteExpiredActiveCards: vi.fn().mockResolvedValue([]),
+      getCardsAwaitingConfirmation: vi.fn().mockResolvedValue([]),
+      updateCardLastActiveAt: vi.fn().mockResolvedValue(undefined)
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const parser = (service as any).parser;
+    parser.discoverScanEntries = vi.fn(() => [{
+      source: 'codex',
+      sessionId: 'old-session',
+      path: '/tmp/old.jsonl',
+      dateBucket: '2026-04-07',
+      lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
+    }]);
+    parser.getRunningSessionsSnapshot = vi.fn(() => new Set<string>(['codex:old-session']));
+    parser.scanEntry = vi.fn((entry) => {
+      return [
+        {
+          source: 'codex',
+          sessionId: 'old-session',
+          sourceRef: 'old-session:turn-1',
+          project: 'old-session',
+          userInput: 'Old prompt',
+          createdAt: '2026-04-07T10:00:00.000Z',
+          completedAt: '2026-04-07T10:01:00.000Z',
+          status: 'completed'
+        },
+        {
+          source: 'codex',
+          sessionId: 'old-session',
+          sourceRef: 'old-session:turn-2',
+          project: 'old-session',
+          userInput: 'Today prompt in old session',
+          createdAt: `${todayBucket}T10:00:00.000Z`,
+          status: 'running'
+        }
+      ];
+    });
+    parser.applySessionScan = vi.fn((prompts) => ({
+      inserted: prompts,
+      justCompletedSourceRefs: [],
+      silentlyCompletedSourceRefs: []
+    }));
+
+    await (service as any).sync();
+
+    expect(parser.sync).not.toHaveBeenCalled();
+    expect(parser.scanEntry).toHaveBeenCalledTimes(1);
+    expect(parser.scanEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/tmp/old.jsonl'
+      })
+    );
+    expect(repository.saveImportedCard).toHaveBeenCalledTimes(1);
+    expect(repository.saveImportedCard).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceRef: 'old-session:turn-2',
+        content: 'Today prompt in old session'
+      })
+    );
+  });
+
+  it('completes history backfill and clears pending entries after all files finish processing', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    state.historyImport = {
+      ...state.historyImport,
+      scope: 'history-backfill',
+      status: 'idle',
+      foregroundReady: true,
+      pendingEntries: [
+        {
+          id: 'codex:/tmp/old-1.jsonl',
+          sourceType: 'codex',
+          filePath: '/tmp/old-1.jsonl',
+          dateBucket: '2026-04-07'
+        },
+        {
+          id: 'codex:/tmp/old-2.jsonl',
+          sourceType: 'codex',
+          filePath: '/tmp/old-2.jsonl',
+          dateBucket: '2026-04-06'
+        }
+      ],
+      completedEntries: []
+    };
+
+    const repositoryState = structuredClone(state);
+    const repository = {
+      getState: vi.fn(async () => repositoryState),
+      setHistoryImport: vi.fn(async (nextHistoryImport) => {
+        repositoryState.historyImport = {
+          ...repositoryState.historyImport,
+          ...nextHistoryImport
+        };
+      }),
+      saveImportedCards: vi.fn().mockResolvedValue([])
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const parser = (service as any).parser;
+    parser.discoverScanEntries = vi.fn(() => [
+      {
+        source: 'codex',
+        sessionId: 'old-1',
+        path: '/tmp/old-1.jsonl',
+        dateBucket: '2026-04-07',
+        lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
+      },
+      {
+        source: 'codex',
+        sessionId: 'old-2',
+        path: '/tmp/old-2.jsonl',
+        dateBucket: '2026-04-06',
+        lastModifiedMs: Date.parse('2026-04-06T10:00:00.000Z')
+      }
+    ]);
+    parser.getRunningSessionsSnapshot = vi.fn(() => new Set<string>());
+    parser.scanEntry = vi.fn((entry) => [
+      {
+        source: 'codex',
+        sessionId: entry.sessionId,
+        sourceRef: `${entry.sessionId}:turn-1`,
+        project: entry.sessionId,
+        userInput: `Import ${entry.sessionId}`,
+        createdAt: `${entry.dateBucket}T10:00:00.000Z`,
+        status: 'completed'
+      }
+    ]);
+    parser.applySessionScan = vi.fn((prompts) => ({ inserted: prompts }));
+
+    await service.runHistoryBackfill();
+
+    expect(repositoryState.historyImport.status).toBe('complete');
+    expect(repositoryState.historyImport.pendingEntries).toEqual([]);
+    expect(repositoryState.historyImport.completedEntries).toEqual([
+      'codex:/tmp/old-1.jsonl',
+      'codex:/tmp/old-2.jsonl'
+    ]);
+    expect(repositoryState.historyImport.processedSources).toBe(2);
+  });
+
+  it('pauses history backfill and preserves remaining pending entries for resume', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    state.historyImport = {
+      ...state.historyImport,
+      scope: 'history-backfill',
+      status: 'idle',
+      foregroundReady: true,
+      pendingEntries: [
+        {
+          id: 'codex:/tmp/pending-1.jsonl',
+          sourceType: 'codex',
+          filePath: '/tmp/pending-1.jsonl',
+          dateBucket: '2026-04-07'
+        },
+        {
+          id: 'codex:/tmp/pending-2.jsonl',
+          sourceType: 'codex',
+          filePath: '/tmp/pending-2.jsonl',
+          dateBucket: '2026-04-06'
+        },
+        {
+          id: 'codex:/tmp/pending-3.jsonl',
+          sourceType: 'codex',
+          filePath: '/tmp/pending-3.jsonl',
+          dateBucket: '2026-04-05'
+        },
+        {
+          id: 'codex:/tmp/pending-4.jsonl',
+          sourceType: 'codex',
+          filePath: '/tmp/pending-4.jsonl',
+          dateBucket: '2026-04-04'
+        }
+      ],
+      completedEntries: []
+    };
+
+    const repositoryState = structuredClone(state);
+    const repository = {
+      getState: vi.fn(async () => repositoryState),
+      setHistoryImport: vi.fn(async (nextHistoryImport) => {
+        repositoryState.historyImport = {
+          ...repositoryState.historyImport,
+          ...nextHistoryImport
+        };
+      }),
+      saveImportedCards: vi.fn()
+    };
+
+    let releaseImports: (() => void) | undefined;
+    const importsReleased = new Promise<void>((resolve) => {
+      releaseImports = resolve;
+    });
+    repository.saveImportedCards.mockImplementation(async () => {
+      await importsReleased;
+      return [];
+    });
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const parser = (service as any).parser;
+    parser.discoverScanEntries = vi.fn(() => [
+      {
+        source: 'codex',
+        sessionId: 'pending-1',
+        path: '/tmp/pending-1.jsonl',
+        dateBucket: '2026-04-07',
+        lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
+      },
+      {
+        source: 'codex',
+        sessionId: 'pending-2',
+        path: '/tmp/pending-2.jsonl',
+        dateBucket: '2026-04-06',
+        lastModifiedMs: Date.parse('2026-04-06T10:00:00.000Z')
+      },
+      {
+        source: 'codex',
+        sessionId: 'pending-3',
+        path: '/tmp/pending-3.jsonl',
+        dateBucket: '2026-04-05',
+        lastModifiedMs: Date.parse('2026-04-05T10:00:00.000Z')
+      },
+      {
+        source: 'codex',
+        sessionId: 'pending-4',
+        path: '/tmp/pending-4.jsonl',
+        dateBucket: '2026-04-04',
+        lastModifiedMs: Date.parse('2026-04-04T10:00:00.000Z')
+      }
+    ]);
+    parser.getRunningSessionsSnapshot = vi.fn(() => new Set<string>());
+    parser.scanEntry = vi.fn((entry) => [
+      {
+        source: 'codex',
+        sessionId: entry.sessionId,
+        sourceRef: `${entry.sessionId}:turn-1`,
+        project: entry.sessionId,
+        userInput: `Import ${entry.sessionId}`,
+        createdAt: `${entry.dateBucket}T10:00:00.000Z`,
+        status: 'completed'
+      }
+    ]);
+    parser.applySessionScan = vi.fn((prompts) => ({ inserted: prompts }));
+
+    const runPromise = service.runHistoryBackfill();
+    await vi.waitFor(() => {
+      expect(repository.saveImportedCards).toHaveBeenCalledTimes(3);
+    });
+
+    await service.pauseHistoryBackfill();
+    releaseImports?.();
+    await runPromise;
+
+    expect(repositoryState.historyImport.status).toBe('paused');
+    expect(repositoryState.historyImport.completedEntries).toHaveLength(3);
+    expect(repositoryState.historyImport.pendingEntries).toEqual([
+      {
+        id: 'codex:/tmp/pending-4.jsonl',
+        sourceType: 'codex',
+        filePath: '/tmp/pending-4.jsonl',
+        dateBucket: '2026-04-04'
+      }
+    ]);
+  });
+
   it('auto-acknowledges the previous completed prompt in the same session when a new prompt arrives', async () => {
     const state = createInitialState('2026-04-08T10:30:00.000Z');
     state.cards = [

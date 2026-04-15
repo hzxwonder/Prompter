@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import {
+  createInitialHistoryImportState,
   createInitialState,
   type DailyStats,
   type FileRef,
+  type HistoryImportEntry,
+  type HistoryImportState,
   type ModularPrompt,
   type PromptCard,
   type PromptRuntimeState,
@@ -156,6 +159,8 @@ interface UpdateCardInput {
 interface UpdateSettingsInput extends Partial<PrompterState['settings']> {}
 
 type PersistedShortcutSettings = Partial<Record<PrompterCommandId, Partial<PrompterState['settings']['shortcuts'][PrompterCommandId]>>>;
+type LegacyHistoryImportPhase = 'idle' | 'scanning-today' | 'scanning-history' | 'complete';
+type PersistedHistoryImportState = Partial<HistoryImportState> & { phase?: LegacyHistoryImportPhase };
 
 function normalizeSettings(
   settings: Partial<PrompterState['settings']> | undefined,
@@ -237,6 +242,84 @@ function normalizeSettings(
   };
 }
 
+function isHistoryImportEntry(value: unknown): value is HistoryImportEntry {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const entry = value as Record<string, unknown>;
+  return (
+    typeof entry.id === 'string' &&
+    (entry.sourceType === 'claude-code' || entry.sourceType === 'codex' || entry.sourceType === 'roo-code') &&
+    typeof entry.filePath === 'string' &&
+    typeof entry.dateBucket === 'string'
+  );
+}
+
+function normalizeHistoryImport(
+  historyImport: PersistedHistoryImportState | undefined,
+  fallback: HistoryImportState
+): { historyImport: HistoryImportState; migrated: boolean } {
+  const legacyPhase = historyImport?.phase;
+  const pendingEntries = Array.isArray(historyImport?.pendingEntries)
+    ? historyImport.pendingEntries.filter(isHistoryImportEntry)
+    : fallback.pendingEntries;
+  const completedEntries = Array.isArray(historyImport?.completedEntries)
+    ? historyImport.completedEntries.filter((entry): entry is string => typeof entry === 'string')
+    : fallback.completedEntries;
+
+  let scope = historyImport?.scope;
+  if (!scope) {
+    if (legacyPhase === 'scanning-today') {
+      scope = 'today-bootstrap';
+    } else if (legacyPhase === 'scanning-history' || legacyPhase === 'complete') {
+      scope = 'history-backfill';
+    } else {
+      scope = fallback.scope;
+    }
+  }
+
+  let status = historyImport?.status;
+  if (!status) {
+    if (legacyPhase === 'complete') {
+      status = 'complete';
+    } else if (legacyPhase === 'scanning-today' || legacyPhase === 'scanning-history') {
+      status = 'running';
+    } else {
+      status = fallback.status;
+    }
+  }
+
+  const normalized: HistoryImportState = {
+    scope,
+    status,
+    processedPrompts: historyImport?.processedPrompts ?? fallback.processedPrompts,
+    totalPrompts: historyImport?.totalPrompts,
+    processedSources: historyImport?.processedSources ?? fallback.processedSources,
+    totalSources: historyImport?.totalSources ?? fallback.totalSources,
+    foregroundReady: historyImport?.foregroundReady ?? fallback.foregroundReady,
+    warningAcknowledged: historyImport?.warningAcknowledged ?? fallback.warningAcknowledged,
+    pendingEntries,
+    completedEntries,
+    lastError: historyImport?.lastError
+  };
+
+  const migrated =
+    !!historyImport &&
+    (
+      typeof legacyPhase !== 'undefined' ||
+      !historyImport.scope ||
+      !historyImport.status ||
+      typeof historyImport.warningAcknowledged !== 'boolean' ||
+      !Array.isArray(historyImport.pendingEntries) ||
+      !Array.isArray(historyImport.completedEntries) ||
+      pendingEntries.length !== (historyImport.pendingEntries?.length ?? 0) ||
+      completedEntries.length !== (historyImport.completedEntries?.length ?? 0)
+    );
+
+  return { historyImport: normalized, migrated };
+}
+
 interface SaveImportedCardInput {
   title: string;
   content: string;
@@ -247,6 +330,10 @@ interface SaveImportedCardInput {
   runtimeState: PromptRuntimeState;
   /** 原始日志时间戳；未提供时使用当前时间 */
   createdAt?: string;
+}
+
+interface SaveImportedCardOptions {
+  persist?: boolean;
 }
 
 interface SaveModularPromptInput {
@@ -321,17 +408,21 @@ export class PromptRepository {
 
   async load(): Promise<void> {
     const defaultSettings = createInitialState(this.now()).settings;
-    const [cards, modularPrompts, settings, sessionGroups] = await Promise.all([
+    const defaultHistoryImport = createInitialHistoryImportState();
+    const [cards, modularPrompts, settings, sessionGroups, persistedHistoryImport] = await Promise.all([
       this.store.readJson<PromptCard[]>('cards.json', []),
       this.store.readJson('modular-prompts.json', []),
       this.store.readJson<Partial<PrompterState['settings']>>('settings.json', defaultSettings),
-      this.store.readJson<SessionGroupMap>('session-groups.json', {})
+      this.store.readJson<SessionGroupMap>('session-groups.json', {}),
+      this.store.readJson<PersistedHistoryImportState>('history-import.json', defaultHistoryImport)
     ]);
 
     // ── 迁移：修正 groupName / groupId，同时移除系统自动生成的消息卡片 ──
     let needsPersist = false;
     const normalizedSettings = normalizeSettings(settings, defaultSettings);
     needsPersist = normalizedSettings.shortcutsMigrated;
+    const normalizedHistoryImport = normalizeHistoryImport(persistedHistoryImport, defaultHistoryImport);
+    needsPersist = needsPersist || normalizedHistoryImport.migrated;
 
     const normalizedSessionGroups = { ...sessionGroups };
     const cardsByNewest = [...(cards as PromptCard[])].sort((left, right) =>
@@ -396,6 +487,7 @@ export class PromptRepository {
       cards: migratedCards,
       modularPrompts,
       dailyStats: rebuildDailyStats(migratedCards),
+      historyImport: normalizedHistoryImport.historyImport,
       settings: normalizedSettings.settings
     };
     this.sessionGroups = normalizedSessionGroups;
@@ -424,11 +516,17 @@ export class PromptRepository {
     return structuredClone(this.state);
   }
 
-  async setHistoryImport(historyImport: PrompterState['historyImport']): Promise<void> {
+  async setHistoryImport(historyImport: Partial<PrompterState['historyImport']>): Promise<void> {
     this.state = {
       ...this.state,
-      historyImport
+      historyImport: {
+        ...this.state.historyImport,
+        ...historyImport,
+        pendingEntries: historyImport.pendingEntries ?? this.state.historyImport.pendingEntries,
+        completedEntries: historyImport.completedEntries ?? this.state.historyImport.completedEntries
+      }
     };
+    await this.persist();
   }
 
   async saveDraft(input: SaveDraftInput): Promise<PromptCard> {
@@ -460,6 +558,27 @@ export class PromptRepository {
   }
 
   async saveImportedCard(input: SaveImportedCardInput): Promise<PromptCard> {
+    return this.saveImportedCardInternal(input, { persist: true });
+  }
+
+  async saveImportedCards(inputs: SaveImportedCardInput[]): Promise<PromptCard[]> {
+    const savedCards: PromptCard[] = [];
+
+    for (const input of inputs) {
+      savedCards.push(await this.saveImportedCardInternal(input, { persist: false }));
+    }
+
+    if (inputs.length > 0) {
+      await this.persist();
+    }
+
+    return savedCards;
+  }
+
+  private async saveImportedCardInternal(
+    input: SaveImportedCardInput,
+    options: SaveImportedCardOptions
+  ): Promise<PromptCard> {
     const nowIso = this.now();
     const sanitizedContent = sanitizeImportedPromptContent(input.content);
     const normalizedContent = sanitizedContent || input.content.trim();
@@ -507,7 +626,9 @@ export class PromptRepository {
       };
       this.state.cards[legacyIndex] = updatedCard;
       this.state.dailyStats = rebuildDailyStats(this.state.cards);
-      await this.persist();
+      if (options.persist !== false) {
+        await this.persist();
+      }
       return updatedCard;
     }
 
@@ -535,7 +656,9 @@ export class PromptRepository {
       };
       this.state.cards[reusableUnusedIndex] = updatedCard;
       this.state.dailyStats = rebuildDailyStats(this.state.cards);
-      await this.persist();
+      if (options.persist !== false) {
+        await this.persist();
+      }
       return updatedCard;
     }
 
@@ -560,7 +683,9 @@ export class PromptRepository {
 
     this.state.cards.unshift(card);
     this.state.dailyStats = rebuildDailyStats(this.state.cards);
-    await this.persist();
+    if (options.persist !== false) {
+      await this.persist();
+    }
     return card;
   }
 
@@ -610,13 +735,7 @@ export class PromptRepository {
       cards: [],
       modularPrompts: [],
       dailyStats: [],
-      historyImport: {
-        phase: 'idle',
-        processedPrompts: 0,
-        processedSources: 0,
-        totalSources: 0,
-        foregroundReady: false
-      }
+      historyImport: createInitialHistoryImportState()
     };
     this.sessionGroups = {};
     await this.persist();
@@ -819,6 +938,7 @@ export class PromptRepository {
       this.store.writeJson('cards.json', this.state.cards),
       this.store.writeJson('modular-prompts.json', this.state.modularPrompts),
       this.store.writeJson('daily-stats.json', this.state.dailyStats),
+      this.store.writeJson('history-import.json', this.state.historyImport),
       this.store.writeJson('settings.json', this.state.settings),
       this.store.writeJson('session-groups.json', this.sessionGroups)
     ]);

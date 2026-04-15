@@ -17,6 +17,9 @@ export class PrompterPanel {
     actions?: {
       switchDataDir: (request: { targetDir: string; migrate: boolean }) => Promise<PrompterState>;
       applyShortcuts?: (shortcuts: PrompterState['settings']['shortcuts']) => Promise<void>;
+      onUserActivity?: () => void;
+      startHistoryImport?: () => Promise<void>;
+      pauseHistoryImport?: () => Promise<void>;
     }
   ): Promise<void> {
     if (PrompterPanel.currentPanel) {
@@ -88,6 +91,9 @@ export class PrompterPanel {
     private readonly actions?: {
       switchDataDir: (request: { targetDir: string; migrate: boolean }) => Promise<PrompterState>;
       applyShortcuts?: (shortcuts: PrompterState['settings']['shortcuts']) => Promise<void>;
+      onUserActivity?: () => void;
+      startHistoryImport?: () => Promise<void>;
+      pauseHistoryImport?: () => Promise<void>;
     }
   ) {
     this.panel.onDidDispose(() => {
@@ -98,6 +104,8 @@ export class PrompterPanel {
   async render(): Promise<void> {
     this.panel.webview.html = getWebviewHtml(this.panel.webview, this.extensionUri);
     this.panel.webview.onDidReceiveMessage(async (message: WebviewToExtensionMessage) => {
+      this.actions?.onUserActivity?.();
+
       if (message.type === 'ready') {
         this.panel.webview.postMessage({ type: 'hydrate', payload: await this.repository.getState() });
       }
@@ -105,6 +113,32 @@ export class PrompterPanel {
       if (message.type === 'view:set') {
         const nextState = this.withActiveView(await this.repository.getState(), message.payload.view);
         this.panel.webview.postMessage({ type: 'state:replace', payload: nextState });
+      }
+
+      if (message.type === 'historyImport:start') {
+        const state = await this.repository.getState();
+        if (!state.historyImport.warningAcknowledged) {
+          const localeText = getLocaleText(state.settings.language);
+          const confirmLabel = state.settings.language === 'en' ? 'Start' : '开始';
+          const cancelLabel = state.settings.language === 'en' ? 'Cancel' : '取消';
+          const choice = await vscode.window.showWarningMessage(
+            localeText.history.importWarning,
+            confirmLabel,
+            cancelLabel
+          );
+
+          if (choice !== confirmLabel) {
+            return;
+          }
+
+          await this.repository.setHistoryImport({ warningAcknowledged: true });
+        }
+
+        await this.actions?.startHistoryImport?.();
+      }
+
+      if (message.type === 'historyImport:pause') {
+        await this.actions?.pauseHistoryImport?.();
       }
 
       if (message.type === 'draft:autosave') {

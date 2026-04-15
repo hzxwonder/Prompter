@@ -472,6 +472,44 @@ describe('LogParser Codex turn completion', () => {
     ]);
   });
 
+  it('updates an existing codex turn in place when the same sourceRef is re-scanned with edited content', () => {
+    const sessionId = 'rollout-2026-04-15T13-00-00-019d9000-b2f9-7cb3-99bc-85aa22c13ad8';
+    const persisted = [
+      {
+        source: 'codex' as const,
+        sessionId,
+        sourceRef: `${sessionId}:turn-1`,
+        project: sessionId,
+        userInput: 'draft prompt',
+        createdAt: '2026-04-15T05:35:56.000Z',
+        status: 'running' as const,
+        justCompleted: false
+      }
+    ];
+    const scanned = [
+      {
+        source: 'codex' as const,
+        sessionId,
+        sourceRef: `${sessionId}:turn-1`,
+        project: sessionId,
+        userInput: 'draft prompt with one more line',
+        createdAt: '2026-04-15T05:35:59.000Z'
+      }
+    ];
+
+    const result = resolvePromptStatuses(scanned, persisted, new Set());
+
+    expect(result.inserted).toEqual([]);
+    expect(result.nextState).toEqual([
+      expect.objectContaining({
+        sourceRef: `${sessionId}:turn-1`,
+        userInput: 'draft prompt with one more line',
+        createdAt: '2026-04-15T05:35:59.000Z',
+        status: 'running'
+      })
+    ]);
+  });
+
   it('prunes stale codex records that no longer exist in scanned logs', () => {
     const sessionId = 'rollout-2026-04-12T20-30-00-019d8174-b2f9-7cb3-99bc-85aa22c13ad8';
     const persisted = [

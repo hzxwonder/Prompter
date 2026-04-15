@@ -153,6 +153,12 @@ export function App({
             cards={state.cards}
             selectedDate={state.selectedDate}
             onSelectDate={selectHistoryDate}
+            onStartHistoryImport={() => {
+              postMessage({ type: 'historyImport:start' });
+            }}
+            onPauseHistoryImport={() => {
+              postMessage({ type: 'historyImport:pause' });
+            }}
           />
         )}
         {state.activeView === 'settings' && (

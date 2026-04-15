@@ -45,7 +45,8 @@ vi.mock('vscode', () => ({
 vi.mock('../../src/panel/PrompterPanel', () => ({
   PrompterPanel: {
     createOrShow,
-    postMessage
+    postMessage,
+    showView: vi.fn()
   }
 }));
 
@@ -57,9 +58,20 @@ vi.mock('../../src/services/KeybindingService', () => ({
 }));
 
 vi.mock('../../src/services/LogSyncService', () => ({
-  LogSyncService: vi.fn().mockImplementation(function (this: { start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }) {
+  LogSyncService: vi.fn().mockImplementation(function (
+    this: {
+      start: ReturnType<typeof vi.fn>;
+      stop: ReturnType<typeof vi.fn>;
+      runHistoryBackfill: ReturnType<typeof vi.fn>;
+      pauseHistoryBackfill: ReturnType<typeof vi.fn>;
+      markUserActivity: ReturnType<typeof vi.fn>;
+    }
+  ) {
     this.start = vi.fn();
     this.stop = vi.fn();
+    this.runHistoryBackfill = vi.fn().mockResolvedValue(undefined);
+    this.pauseHistoryBackfill = vi.fn().mockResolvedValue(undefined);
+    this.markUserActivity = vi.fn();
   })
 }));
 

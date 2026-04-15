@@ -5,7 +5,8 @@ import { PrompterPanel } from '../../../src/panel/PrompterPanel';
 
 vi.mock('vscode', () => ({
   window: {
-    createWebviewPanel: vi.fn()
+    createWebviewPanel: vi.fn(),
+    showWarningMessage: vi.fn()
   },
   workspace: {
     workspaceFolders: [{ uri: { fsPath: '/workspace' } }]
@@ -54,6 +55,7 @@ describe('PrompterPanel', () => {
   beforeEach(async () => {
     const vscode = await import('vscode');
     vi.mocked(vscode.window.createWebviewPanel).mockReset();
+    vi.mocked(vscode.window.showWarningMessage).mockReset();
     PrompterPanel['currentPanel'] = undefined;
   });
 
@@ -109,6 +111,141 @@ describe('PrompterPanel', () => {
       type: 'state:replace',
       payload: clearedState
     });
+  });
+
+  it('reports user activity before handling incoming webview messages', async () => {
+    const initialState = createInitialState('2026-04-08T10:00:00.000Z');
+    const postMessage = vi.fn();
+    const onUserActivity = vi.fn();
+    let onDidReceiveMessage:
+      | ((message: { type: 'draft:autosave'; payload: { title: string; content: string; fileRefs: [] } }) => Promise<void>)
+      | undefined;
+    const vscode = await import('vscode');
+
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValue(
+      createMockPanel(postMessage, (listener) => {
+        onDidReceiveMessage = listener as typeof onDidReceiveMessage;
+        return createDisposable();
+      })
+    );
+
+    const repository = {
+      saveDraft: vi.fn().mockResolvedValue({
+        id: 'card-1',
+        title: 'Draft',
+        content: 'Keep workspace responsive',
+        status: 'unused',
+        runtimeState: 'unknown',
+        groupId: 'g1',
+        groupName: 'g1',
+        groupColor: '#000000',
+        sourceType: 'manual',
+        createdAt: '2026-04-08T10:00:00.000Z',
+        updatedAt: '2026-04-08T10:00:00.000Z',
+        dateBucket: '2026-04-08',
+        fileRefs: [],
+        justCompleted: false
+      }),
+      getState: vi.fn().mockResolvedValue(initialState)
+    };
+
+    await PrompterPanel.createOrShow({} as never, repository as never, {
+      switchDataDir: vi.fn() as never,
+      onUserActivity
+    });
+
+    await onDidReceiveMessage?.({
+      type: 'draft:autosave',
+      payload: { title: 'Draft', content: 'Keep workspace responsive', fileRefs: [] }
+    });
+
+    expect(onUserActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards history import start and pause requests through panel actions', async () => {
+    const postMessage = vi.fn();
+    const startHistoryImport = vi.fn().mockResolvedValue(undefined);
+    const pauseHistoryImport = vi.fn().mockResolvedValue(undefined);
+    let onDidReceiveMessage:
+      | ((message: { type: 'historyImport:start' } | { type: 'historyImport:pause' }) => Promise<void>)
+      | undefined;
+    const vscode = await import('vscode');
+
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValue(
+      createMockPanel(postMessage, (listener) => {
+        onDidReceiveMessage = listener as typeof onDidReceiveMessage;
+        return createDisposable();
+      })
+    );
+
+    const repository = {
+      getState: vi.fn().mockResolvedValue({
+        ...createInitialState('2026-04-08T10:00:00.000Z'),
+        historyImport: {
+          ...createInitialState('2026-04-08T10:00:00.000Z').historyImport,
+          scope: 'history-backfill',
+          status: 'paused',
+          warningAcknowledged: true
+        }
+      })
+    };
+
+    await PrompterPanel.createOrShow({} as never, repository as never, {
+      switchDataDir: vi.fn() as never,
+      startHistoryImport,
+      pauseHistoryImport
+    });
+
+    await onDidReceiveMessage?.({ type: 'historyImport:start' });
+    await onDidReceiveMessage?.({ type: 'historyImport:pause' });
+
+    expect(startHistoryImport).toHaveBeenCalledTimes(1);
+    expect(pauseHistoryImport).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for confirmation before starting history import for the first time', async () => {
+    const postMessage = vi.fn();
+    const startHistoryImport = vi.fn().mockResolvedValue(undefined);
+    let onDidReceiveMessage:
+      | ((message: { type: 'historyImport:start' }) => Promise<void>)
+      | undefined;
+    const vscode = await import('vscode');
+    vi.mocked(vscode.window.showWarningMessage).mockResolvedValue('开始' as never);
+
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValue(
+      createMockPanel(postMessage, (listener) => {
+        onDidReceiveMessage = listener as typeof onDidReceiveMessage;
+        return createDisposable();
+      })
+    );
+
+    const repository = {
+      getState: vi.fn().mockResolvedValue({
+        ...createInitialState('2026-04-08T10:00:00.000Z'),
+        historyImport: {
+          ...createInitialState('2026-04-08T10:00:00.000Z').historyImport,
+          scope: 'history-backfill',
+          status: 'idle',
+          warningAcknowledged: false
+        }
+      }),
+      setHistoryImport: vi.fn().mockResolvedValue(undefined)
+    };
+
+    await PrompterPanel.createOrShow({} as never, repository as never, {
+      switchDataDir: vi.fn() as never,
+      startHistoryImport
+    });
+
+    await onDidReceiveMessage?.({ type: 'historyImport:start' });
+
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      '历史日志处理可能会占用一定内存和时间。处理期间，VS Code / Cursor 可能出现短暂卡顿，这是正常现象。建议尽量在暂时不需要使用编辑器时进行处理。是否开始？',
+      '开始',
+      '取消'
+    );
+    expect(repository.setHistoryImport).toHaveBeenCalledWith({ warningAcknowledged: true });
+    expect(startHistoryImport).toHaveBeenCalledTimes(1);
   });
 
   it('reports an error when shortcut updates are requested without an apply action', async () => {

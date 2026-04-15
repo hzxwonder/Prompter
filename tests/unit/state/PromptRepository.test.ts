@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createInitialState } from '../../../src/shared/models';
 import { PromptRepository } from '../../../src/state/PromptRepository';
 
@@ -288,6 +288,83 @@ describe('PromptRepository', () => {
     expect(new Set(sameSessionCards.map((card) => card.groupId))).toEqual(new Set(['codex:codex-session-1']));
   });
 
+  it('stores imported history prompts in a single batch persist', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
+    const repo = await PromptRepository.create(dir, () => '2026-04-08T10:00:00.000Z');
+
+    const persistSpy = vi.spyOn(repo, 'persist');
+
+    const cards = await repo.saveImportedCards([
+      {
+        title: 'Prompt one',
+        content: 'Inspect flaky snapshots',
+        groupName: 'codex-session-1',
+        sourceType: 'codex',
+        sourceRef: 'codex-session-1:turn-1',
+        status: 'completed',
+        runtimeState: 'finished',
+        createdAt: '2026-04-08T09:00:00.000Z'
+      },
+      {
+        title: 'Prompt two',
+        content: 'Inspect release packaging',
+        groupName: 'codex-session-1',
+        sourceType: 'codex',
+        sourceRef: 'codex-session-1:turn-2',
+        status: 'completed',
+        runtimeState: 'finished',
+        createdAt: '2026-04-08T09:05:00.000Z'
+      }
+    ]);
+
+    expect(cards).toHaveLength(2);
+    expect(persistSpy).toHaveBeenCalledTimes(1);
+    const snapshot = await repo.getState();
+    expect(snapshot.cards).toHaveLength(2);
+  });
+
+  it('persists resumable history import checkpoints across reloads', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
+    const now = () => '2026-04-08T10:00:00.000Z';
+    const repo = await PromptRepository.create(dir, now);
+
+    await repo.setHistoryImport({
+      scope: 'history-backfill',
+      status: 'paused',
+      processedPrompts: 12,
+      totalPrompts: 48,
+      processedSources: 1,
+      totalSources: 3,
+      foregroundReady: true,
+      warningAcknowledged: true,
+      pendingEntries: [
+        {
+          id: 'entry-1',
+          sourceType: 'codex',
+          filePath: '/tmp/codex/session.jsonl',
+          dateBucket: '2026-04-07'
+        }
+      ],
+      completedEntries: ['entry-0'],
+      lastError: 'paused by user'
+    });
+
+    const reloadedRepo = await PromptRepository.create(dir, now);
+    const snapshot = await reloadedRepo.getState();
+
+    expect(snapshot.historyImport.status).toBe('paused');
+    expect(snapshot.historyImport.pendingEntries).toEqual([
+      {
+        id: 'entry-1',
+        sourceType: 'codex',
+        filePath: '/tmp/codex/session.jsonl',
+        dateBucket: '2026-04-07'
+      }
+    ]);
+    expect(snapshot.historyImport.completedEntries).toEqual(['entry-0']);
+    expect(snapshot.historyImport.warningAcknowledged).toBe(true);
+  });
+
   it('persists settings updates and clears cached files', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
     const repo = await PromptRepository.create(dir, () => '2026-04-08T10:00:00.000Z');
@@ -331,7 +408,14 @@ describe('PromptRepository', () => {
     expect(snapshot.settings.dataDir).toBe('/tmp/prompter-custom');
 
     const files = await readdir(dir);
-    expect(files.sort()).toEqual(['cards.json', 'daily-stats.json', 'modular-prompts.json', 'session-groups.json', 'settings.json']);
+    expect(files.sort()).toEqual([
+      'cards.json',
+      'daily-stats.json',
+      'history-import.json',
+      'modular-prompts.json',
+      'session-groups.json',
+      'settings.json'
+    ]);
   });
 
   it('persists normalized shortcut settings back to disk when they are missing', async () => {

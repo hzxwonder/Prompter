@@ -67,6 +67,13 @@ export interface ShortcutConfig {
   defaultKeybinding: string;
 }
 
+export interface HistoryImportEntry {
+  id: string;
+  sourceType: 'claude-code' | 'codex' | 'roo-code';
+  filePath: string;
+  dateBucket: string;
+}
+
 function createDefaultShortcuts(): Record<PrompterCommandId, ShortcutConfig> {
   const openKeybinding = 'ctrl+e';
   const importKeybinding = 'ctrl+shift+f';
@@ -117,12 +124,17 @@ export interface PrompterSettings {
 }
 
 export interface HistoryImportState {
-  phase: 'idle' | 'scanning-today' | 'scanning-history' | 'complete';
+  scope: 'idle' | 'today-bootstrap' | 'history-backfill';
+  status: 'idle' | 'running' | 'paused' | 'complete';
   processedPrompts: number;
   totalPrompts?: number;
   processedSources: number;
   totalSources: number;
   foregroundReady: boolean;
+  warningAcknowledged: boolean;
+  pendingEntries: HistoryImportEntry[];
+  completedEntries: string[];
+  lastError?: string;
 }
 
 export interface PrompterState {
@@ -134,6 +146,20 @@ export interface PrompterState {
   selectedCardId?: string;
   selectedDate?: string;
   settings: PrompterSettings;
+}
+
+export function createInitialHistoryImportState(): HistoryImportState {
+  return {
+    scope: 'idle',
+    status: 'idle',
+    processedPrompts: 0,
+    processedSources: 0,
+    totalSources: 0,
+    foregroundReady: false,
+    warningAcknowledged: false,
+    pendingEntries: [],
+    completedEntries: []
+  };
 }
 
 function padDatePart(value: number): string {
@@ -155,13 +181,7 @@ export function createInitialState(nowIso: string, _platform?: string): Prompter
     cards: [],
     modularPrompts: [],
     dailyStats: [],
-    historyImport: {
-      phase: 'idle',
-      processedPrompts: 0,
-      processedSources: 0,
-      totalSources: 0,
-      foregroundReady: false
-    },
+    historyImport: createInitialHistoryImportState(),
     selectedDate: toDateBucket(nowIso),
     settings: {
       dataDir: '~/prompter',

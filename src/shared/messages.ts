@@ -24,6 +24,8 @@ export type ExtensionToWebviewMessage =
 
 export type WebviewToExtensionMessage =
   | { type: 'view:set'; payload: { view: PrompterView } }
+  | { type: 'historyImport:start' }
+  | { type: 'historyImport:pause' }
   | {
       type: 'draft:autosave';
       payload: {

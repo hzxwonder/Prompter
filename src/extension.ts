@@ -55,12 +55,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       log('Prompter shortcuts applied successfully');
     };
 
+    const onUserActivity = () => {
+      logSyncService?.markUserActivity();
+    };
+
+    const startHistoryImport = async () => {
+      await logSyncService?.runHistoryBackfill();
+    };
+
+    const pauseHistoryImport = async () => {
+      await logSyncService?.pauseHistoryBackfill();
+    };
+
     context.subscriptions.push(
       vscode.window.registerWebviewViewProvider(PrompterSidebarViewProvider.viewType, new PrompterSidebarViewProvider()),
       vscode.commands.registerCommand('prompter.open', async () => {
         log('Command: prompter.open triggered');
         try {
-          await PrompterPanel.createOrShow(context.extensionUri, repository, { switchDataDir, applyShortcuts });
+          await PrompterPanel.createOrShow(context.extensionUri, repository, {
+            switchDataDir,
+            applyShortcuts,
+            onUserActivity,
+            startHistoryImport,
+            pauseHistoryImport
+          });
           log('Command: prompter.open completed');
         } catch (error) {
           logError('Command prompter.open failed', error);
@@ -138,7 +156,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await insertIntoComposer(context, repository, switchDataDir, applyShortcuts, { text, fileRefs: [] });
       }),
       vscode.commands.registerCommand('prompter.openShortcuts', async () => {
-        await PrompterPanel.createOrShow(context.extensionUri, repository, { switchDataDir, applyShortcuts });
+        await PrompterPanel.createOrShow(context.extensionUri, repository, {
+          switchDataDir,
+          applyShortcuts,
+          onUserActivity,
+          startHistoryImport,
+          pauseHistoryImport
+        });
         await PrompterPanel.showView(repository, 'shortcuts');
       })
     );
@@ -165,7 +189,19 @@ async function insertIntoComposer(
     fileRefs: { path: string; startLine?: number; endLine?: number }[];
   }
 ): Promise<void> {
-  await PrompterPanel.createOrShow(context.extensionUri, repository, { switchDataDir, applyShortcuts });
+  await PrompterPanel.createOrShow(context.extensionUri, repository, {
+    switchDataDir,
+    applyShortcuts,
+    onUserActivity: () => {
+      logSyncService?.markUserActivity();
+    },
+    startHistoryImport: async () => {
+      await logSyncService?.runHistoryBackfill();
+    },
+    pauseHistoryImport: async () => {
+      await logSyncService?.pauseHistoryBackfill();
+    }
+  });
   PrompterPanel.postMessage({
     type: 'composer:insertText',
     payload: {
