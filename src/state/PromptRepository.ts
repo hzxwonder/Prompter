@@ -424,6 +424,13 @@ export class PromptRepository {
     return structuredClone(this.state);
   }
 
+  async setHistoryImport(historyImport: PrompterState['historyImport']): Promise<void> {
+    this.state = {
+      ...this.state,
+      historyImport
+    };
+  }
+
   async saveDraft(input: SaveDraftInput): Promise<PromptCard> {
     const nowIso = this.now();
     const groupName = input.groupName?.trim() || '未分类';
@@ -602,7 +609,14 @@ export class PromptRepository {
       ...this.state,
       cards: [],
       modularPrompts: [],
-      dailyStats: []
+      dailyStats: [],
+      historyImport: {
+        phase: 'idle',
+        processedPrompts: 0,
+        processedSources: 0,
+        totalSources: 0,
+        foregroundReady: false
+      }
     };
     this.sessionGroups = {};
     await this.persist();

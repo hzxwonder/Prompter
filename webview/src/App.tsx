@@ -148,6 +148,7 @@ export function App({
         {state.activeView === 'history' && (
           <HistoryPage
             language={state.settings.language}
+            historyImport={state.historyImport}
             dailyStats={state.dailyStats}
             cards={state.cards}
             selectedDate={state.selectedDate}

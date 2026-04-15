@@ -106,6 +106,52 @@ describe('App shell', () => {
     expect(screen.getByRole('button', { name: 'Completed, awaiting confirmation. Move to completed.' })).toBeInTheDocument();
   });
 
+  it('keeps older completed history cards out of the workspace lanes', () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    state.cards = [
+      {
+        id: 'today-active',
+        title: 'Today active',
+        content: 'Today active prompt',
+        status: 'active',
+        runtimeState: 'running',
+        groupId: 'today',
+        groupName: 'today',
+        groupColor: '#22c55e',
+        sourceType: 'codex',
+        sourceRef: 'session-today:turn-1',
+        createdAt: '2026-04-08T09:50:00.000Z',
+        updatedAt: '2026-04-08T09:50:00.000Z',
+        dateBucket: '2026-04-08',
+        fileRefs: [],
+        justCompleted: false
+      },
+      {
+        id: 'old-completed',
+        title: 'Old completed',
+        content: 'Old completed prompt',
+        status: 'completed',
+        runtimeState: 'finished',
+        groupId: 'old',
+        groupName: 'old',
+        groupColor: '#64748b',
+        sourceType: 'codex',
+        sourceRef: 'session-old:turn-1',
+        createdAt: '2026-04-07T09:50:00.000Z',
+        updatedAt: '2026-04-07T10:10:00.000Z',
+        completedAt: '2026-04-07T10:10:00.000Z',
+        dateBucket: '2026-04-07',
+        fileRefs: [],
+        justCompleted: false
+      }
+    ];
+
+    render(<App initialState={state} />);
+
+    expect(screen.getByText('Today active prompt')).toBeInTheDocument();
+    expect(screen.queryByText('Old completed prompt')).not.toBeInTheDocument();
+  });
+
   it('shows all workspace prompts in list view ordered by confirmation priority then latest time', async () => {
     const dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-04-08T11:00:00.000Z'));
     const user = userEvent.setup();

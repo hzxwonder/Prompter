@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { PromptCard, DailyStats, PrompterSettings } from '../../../src/shared/models';
+import type { PromptCard, DailyStats, PrompterSettings, HistoryImportState } from '../../../src/shared/models';
 import { Heatmap } from '../components/Heatmap';
 import { getLocaleText, isUncategorizedGroupName } from '../i18n';
 
@@ -201,18 +201,26 @@ function AccordionGroup({
 
 export function HistoryPage({
   language = 'zh-CN',
+  historyImport,
   dailyStats,
   cards,
   selectedDate,
   onSelectDate
 }: {
   language?: PrompterSettings['language'];
+  historyImport?: HistoryImportState;
   dailyStats: DailyStats[];
   cards: PromptCard[];
   selectedDate?: string;
   onSelectDate: (date: string) => void;
 }) {
   const localeText = getLocaleText(language);
+  const totalForProgress = historyImport?.totalPrompts ?? historyImport?.totalSources ?? 0;
+  const valueNow = historyImport?.totalPrompts
+    ? historyImport.processedPrompts
+    : historyImport?.totalSources
+      ? historyImport.processedSources
+      : undefined;
   // null = show all; a status value = filter to that status only
   const [statusFilter, setStatusFilter] = useState<PromptCard['status'] | null>(null);
 
@@ -242,6 +250,42 @@ export function HistoryPage({
 
   return (
     <div className="history-page">
+      {historyImport && historyImport.phase !== 'idle' && historyImport.phase !== 'complete' && (
+        <section className="history-import-progress" aria-label={localeText.history.importProgressLabel}>
+          <div className="history-import-progress__header">
+            <div>
+              <h2>{localeText.history.importInProgressTitle}</h2>
+              {historyImport.foregroundReady && (
+                <p className="workspace-subtitle">{localeText.history.importForegroundReady}</p>
+              )}
+            </div>
+            <span className="history-import-progress__meta">
+              {localeText.history.importProcessedSources(historyImport.processedSources, historyImport.totalSources)}
+            </span>
+          </div>
+          <div
+            className="history-import-progress__bar"
+            role="progressbar"
+            aria-label={localeText.history.importProgressLabel}
+            aria-valuemin={0}
+            aria-valuemax={totalForProgress || 100}
+            aria-valuenow={valueNow}
+          >
+            <div
+              className="history-import-progress__fill"
+              style={{
+                width: `${Math.max(
+                  totalForProgress > 0 && valueNow != null ? (valueNow / totalForProgress) * 100 : 8,
+                  8
+                )}%`
+              }}
+            />
+          </div>
+          <p className="history-import-progress__summary">
+            {localeText.history.importProcessedPrompts(historyImport.processedPrompts, historyImport.totalPrompts)}
+          </p>
+        </section>
+      )}
       {!dailyStats.length ? (
         <div className="history-empty-state">{localeText.history.empty}</div>
       ) : (

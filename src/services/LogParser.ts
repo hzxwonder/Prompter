@@ -41,6 +41,14 @@ interface ParsedPromptRecord {
   completionKind?: 'completed' | 'aborted';
 }
 
+export interface LogSessionScanEntry {
+  source: LogPrompt['source'];
+  sessionId: string;
+  path: string;
+  dateBucket: string;
+  lastModifiedMs: number;
+}
+
 interface LogParserState {
   prompts: StoredPromptRecord[];
 }
@@ -473,8 +481,16 @@ export class LogParser {
     log('LogParser initialized');
   }
 
+  hasPersistedPrompts(): boolean {
+    return this.state.prompts.length > 0;
+  }
+
   getSessionLastModifiedMs(source: LogPrompt['source'], sid: string): number | undefined {
     return this.sessionLastModified.get(sessionKey(source, sid));
+  }
+
+  getRunningSessionsSnapshot(): Set<string> {
+    return this.getRunningSessions();
   }
 
   private loadState(): LogParserState {
@@ -733,6 +749,146 @@ export class LogParser {
     }
 
     return allPrompts;
+  }
+
+  discoverScanEntries(): LogSessionScanEntry[] {
+    const entries: LogSessionScanEntry[] = [];
+
+    if (fs.existsSync(CLAUDE_PROJECTS_DIR)) {
+      try {
+        const projects = fs.readdirSync(CLAUDE_PROJECTS_DIR);
+        for (const project of projects) {
+          const projectDir = path.join(CLAUDE_PROJECTS_DIR, project);
+          if (!fs.statSync(projectDir).isDirectory()) continue;
+
+          for (const file of fs.readdirSync(projectDir)) {
+            if (!file.endsWith('.jsonl')) continue;
+            const filePath = path.join(projectDir, file);
+            const stat = fs.statSync(filePath);
+            entries.push({
+              source: 'claude-code',
+              sessionId: path.basename(file, '.jsonl'),
+              path: filePath,
+              dateBucket: new Date(stat.mtimeMs).toISOString().slice(0, 10),
+              lastModifiedMs: stat.mtimeMs
+            });
+          }
+        }
+      } catch (error) {
+        logError('发现 Claude 会话失败', error);
+      }
+    }
+
+    if (fs.existsSync(CODEX_SESSIONS_DIR)) {
+      const scanDir = (dir: string): void => {
+        try {
+          for (const entry of fs.readdirSync(dir)) {
+            const fullPath = path.join(dir, entry);
+            const stat = fs.statSync(fullPath);
+            if (stat.isDirectory()) {
+              scanDir(fullPath);
+              continue;
+            }
+            if (!entry.endsWith('.jsonl')) continue;
+            const parts = fullPath.split(path.sep);
+            const dateBucket =
+              parts.length >= 4
+                ? `${parts[parts.length - 4]}-${parts[parts.length - 3]}-${parts[parts.length - 2]}`
+                : new Date(stat.mtimeMs).toISOString().slice(0, 10);
+            entries.push({
+              source: 'codex',
+              sessionId: path.basename(entry, '.jsonl'),
+              path: fullPath,
+              dateBucket,
+              lastModifiedMs: stat.mtimeMs
+            });
+          }
+        } catch (error) {
+          logError(`发现 Codex 会话失败 ${dir}`, error);
+        }
+      };
+
+      scanDir(CODEX_SESSIONS_DIR);
+    }
+
+    if (fs.existsSync(ROO_TASKS_DIR)) {
+      try {
+        for (const entry of fs.readdirSync(ROO_TASKS_DIR)) {
+          const taskDir = path.join(ROO_TASKS_DIR, entry);
+          const stat = fs.statSync(taskDir);
+          if (!stat.isDirectory()) continue;
+          entries.push({
+            source: 'roo-code',
+            sessionId: entry,
+            path: taskDir,
+            dateBucket: new Date(stat.mtimeMs).toISOString().slice(0, 10),
+            lastModifiedMs: stat.mtimeMs
+          });
+        }
+      } catch (error) {
+        logError('发现 Roo 会话失败', error);
+      }
+    }
+
+    return entries.sort((left, right) => right.lastModifiedMs - left.lastModifiedMs);
+  }
+
+  scanEntry(entry: LogSessionScanEntry): ParsedPromptRecord[] {
+    if (entry.source === 'claude-code') {
+      return this.extractClaudePrompts(entry.path);
+    }
+
+    if (entry.source === 'codex') {
+      const sessionFileById = new Map<string, string>();
+      try {
+        const content = fs.readFileSync(entry.path, 'utf-8');
+        const { ownId } = this.readCodexSessionMeta(content.split('\n'), entry.sessionId);
+        if (ownId) {
+          sessionFileById.set(ownId, entry.path);
+        }
+      } catch (error) {
+        logError(`建立 Codex session 索引失败 ${entry.path}`, error);
+      }
+      return this.extractCodexPromptsFromFile(entry.path, sessionFileById, new Set());
+    }
+
+    return this.extractRooPrompts(entry.path);
+  }
+
+  applySessionScan(
+    scannedPrompts: ParsedPromptRecord[],
+    runningSessions: Set<string>
+  ): { inserted: LogPrompt[]; justCompletedSourceRefs: string[]; silentlyCompletedSourceRefs: string[] } {
+    if (scannedPrompts.length === 0) {
+      return {
+        inserted: [],
+        justCompletedSourceRefs: [],
+        silentlyCompletedSourceRefs: []
+      };
+    }
+
+    const targetSessionKeys = new Set(scannedPrompts.map((prompt) => sessionKey(prompt.source, prompt.sessionId)));
+    const untouchedPrompts = this.state.prompts.filter(
+      (prompt) => !targetSessionKeys.has(sessionKey(prompt.source, prompt.sessionId))
+    );
+    const sessionPrompts = this.state.prompts.filter((prompt) =>
+      targetSessionKeys.has(sessionKey(prompt.source, prompt.sessionId))
+    );
+
+    const { inserted, nextState, justCompletedSourceRefs, silentlyCompletedSourceRefs } = resolvePromptStatuses(
+      scannedPrompts,
+      sessionPrompts,
+      runningSessions
+    );
+
+    this.state.prompts = [...untouchedPrompts, ...nextState];
+    this.saveState();
+
+    return {
+      inserted,
+      justCompletedSourceRefs,
+      silentlyCompletedSourceRefs
+    };
   }
 
   private scanClaudeLogs(): ParsedPromptRecord[] {

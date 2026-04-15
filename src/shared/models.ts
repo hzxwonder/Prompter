@@ -116,11 +116,21 @@ export interface PrompterSettings {
   shortcuts: Record<PrompterCommandId, ShortcutConfig>;
 }
 
+export interface HistoryImportState {
+  phase: 'idle' | 'scanning-today' | 'scanning-history' | 'complete';
+  processedPrompts: number;
+  totalPrompts?: number;
+  processedSources: number;
+  totalSources: number;
+  foregroundReady: boolean;
+}
+
 export interface PrompterState {
   activeView: PrompterView;
   cards: PromptCard[];
   modularPrompts: ModularPrompt[];
   dailyStats: DailyStats[];
+  historyImport: HistoryImportState;
   selectedCardId?: string;
   selectedDate?: string;
   settings: PrompterSettings;
@@ -145,6 +155,13 @@ export function createInitialState(nowIso: string, _platform?: string): Prompter
     cards: [],
     modularPrompts: [],
     dailyStats: [],
+    historyImport: {
+      phase: 'idle',
+      processedPrompts: 0,
+      processedSources: 0,
+      totalSources: 0,
+      foregroundReady: false
+    },
     selectedDate: toDateBucket(nowIso),
     settings: {
       dataDir: '~/prompter',

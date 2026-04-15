@@ -3,11 +3,11 @@ import { exec } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { homedir } from 'node:os';
-import type { BuiltinTone } from '../shared/models';
+import { toDateBucket, type BuiltinTone } from '../shared/models';
 import { getLocaleText } from '../shared/i18n';
 import type { PromptRepository } from '../state/PromptRepository';
 import { PrompterPanel } from '../panel/PrompterPanel';
-import { LogParser, type LogPrompt } from './LogParser';
+import { LogParser, type LogPrompt, type LogSessionScanEntry } from './LogParser';
 import { log, logError } from '../logger';
 
 const BUILTIN_TONES = new Set<string>(['soft-bell', 'chime', 'ding']);
@@ -19,6 +19,13 @@ const WATCH_ROOTS = [
 const AUTO_COMPLETE_AFTER_MS = 2 * 60 * 60 * 1000;
 const AWAITING_CONFIRMATION_MS = 20 * 60 * 1000;
 
+interface ImportPromptOptions {
+  foregroundOnly?: boolean;
+  todayBucket?: string;
+  skipRefresh?: boolean;
+  skipNotify?: boolean;
+}
+
 export class LogSyncService {
   private intervalId: NodeJS.Timeout | null = null;
   private midnightTimeoutId: NodeJS.Timeout | null = null;
@@ -26,6 +33,7 @@ export class LogSyncService {
   private readonly watchers: fs.FSWatcher[] = [];
   private syncInFlight = false;
   private syncQueued = false;
+  private initialImportInFlight = false;
   private parser: LogParser;
 
   constructor(
@@ -41,7 +49,7 @@ export class LogSyncService {
     }
 
     this.setupWatchers();
-    void this.requestSync();
+    void this.startInitialImportIfNeeded();
 
     this.intervalId = setInterval(() => {
       void this.requestSync();
@@ -74,6 +82,33 @@ export class LogSyncService {
 
     this.parser.close();
     log('[LogSyncService] 已停止');
+  }
+
+  private async startInitialImportIfNeeded(): Promise<void> {
+    const state = await this.repository.getState();
+    const hasImportedCards = state.cards.some(
+      (card) => card.sourceType === 'claude-code' || card.sourceType === 'codex' || card.sourceType === 'roo-code'
+    );
+
+    if (hasImportedCards || this.parser.hasPersistedPrompts()) {
+      await this.requestSync();
+      return;
+    }
+
+    this.initialImportInFlight = true;
+
+    try {
+      await this.runStagedInitialImport();
+    } catch (error) {
+      logError('[LogSyncService] 首次历史导入失败，回退到普通同步', error);
+      await this.requestSync();
+    } finally {
+      this.initialImportInFlight = false;
+      if (this.syncQueued) {
+        this.syncQueued = false;
+        await this.requestSync();
+      }
+    }
   }
 
   private scheduleMidnightSync(): void {
@@ -123,6 +158,11 @@ export class LogSyncService {
   }
 
   private async requestSync(): Promise<void> {
+    if (this.initialImportInFlight) {
+      this.syncQueued = true;
+      return;
+    }
+
     if (this.syncInFlight) {
       this.syncQueued = true;
       return;
@@ -138,6 +178,107 @@ export class LogSyncService {
         await this.requestSync();
       }
     }
+  }
+
+  private async runStagedInitialImport(): Promise<void> {
+    const todayBucket = new Date().toISOString().slice(0, 10);
+    const entries = this.parser.discoverScanEntries();
+    const runningSessions = this.parser.getRunningSessionsSnapshot();
+    const todayEntries = entries.filter((entry) => entry.dateBucket === todayBucket);
+    const historyEntries = entries.filter((entry) => entry.dateBucket !== todayBucket);
+    let processedPrompts = 0;
+    let processedSources = 0;
+
+    await this.publishHistoryImportProgress({
+      phase: 'scanning-today',
+      processedPrompts,
+      processedSources,
+      totalSources: entries.length,
+      foregroundReady: false
+    });
+
+    for (const entry of todayEntries) {
+      processedPrompts += await this.importEntry(entry, runningSessions, {
+        foregroundOnly: true,
+        todayBucket,
+        skipRefresh: true,
+        skipNotify: true
+      });
+      processedSources += 1;
+      await this.publishHistoryImportProgress({
+        phase: 'scanning-today',
+        processedPrompts,
+        processedSources,
+        totalSources: entries.length,
+        foregroundReady: false
+      });
+    }
+
+    await this.publishHistoryImportProgress({
+      phase: historyEntries.length > 0 ? 'scanning-history' : 'complete',
+      processedPrompts,
+      processedSources,
+      totalSources: entries.length,
+      foregroundReady: true
+    });
+    await PrompterPanel.refresh(this.repository);
+
+    for (const entry of historyEntries) {
+      processedPrompts += await this.importEntry(entry, runningSessions, {
+        foregroundOnly: true,
+        todayBucket,
+        skipRefresh: true,
+        skipNotify: true
+      });
+      processedSources += 1;
+      await this.publishHistoryImportProgress({
+        phase: 'scanning-history',
+        processedPrompts,
+        processedSources,
+        totalSources: entries.length,
+        foregroundReady: true
+      });
+      await PrompterPanel.refresh(this.repository);
+      await this.pauseForUi();
+    }
+
+    await this.publishHistoryImportProgress({
+      phase: 'complete',
+      processedPrompts,
+      totalPrompts: processedPrompts,
+      processedSources,
+      totalSources: entries.length,
+      foregroundReady: true
+    });
+    await PrompterPanel.refresh(this.repository);
+    await this.requestSync();
+  }
+
+  private async publishHistoryImportProgress(progress: Awaited<ReturnType<PromptRepository['getState']>>['historyImport']): Promise<void> {
+    await this.repository.setHistoryImport(progress);
+  }
+
+  private async importEntry(
+    entry: LogSessionScanEntry,
+    runningSessions: Set<string>,
+    options: ImportPromptOptions
+  ): Promise<number> {
+    const prompts = this.parser.scanEntry(entry);
+    const { inserted } = this.parser.applySessionScan(prompts, runningSessions);
+
+    for (const prompt of inserted) {
+      await this.handleNewPrompt(prompt, {
+        ...options,
+        skipRefresh: true,
+        skipNotify: true
+      });
+    }
+
+    return prompts.length;
+  }
+
+  private pauseForUi(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 0));
   }
 
   /**
@@ -342,11 +483,26 @@ export class LogSyncService {
     }
   }
 
-  private async handleNewPrompt(prompt: LogPrompt): Promise<void> {
+  private async handleNewPrompt(prompt: LogPrompt, options: ImportPromptOptions = {}): Promise<void> {
     log(`[LogSyncService] 发现新 prompt: ${prompt.sessionId}`);
 
     const state = await this.repository.getState();
-    await this.completePreviousSameSessionPrompts(state, prompt);
+    if (!options.foregroundOnly) {
+      await this.completePreviousSameSessionPrompts(state, prompt);
+    }
+
+    const promptBucket = toDateBucket(prompt.createdAt);
+    const shouldDemoteBackgroundActivePrompt =
+      options.foregroundOnly &&
+      options.todayBucket !== undefined &&
+      promptBucket !== options.todayBucket &&
+      prompt.status === 'running';
+    const nextStatus = shouldDemoteBackgroundActivePrompt
+      ? 'completed'
+      : (prompt.status === 'running' ? 'active' : 'completed');
+    const nextRuntimeState = shouldDemoteBackgroundActivePrompt
+      ? 'finished'
+      : (prompt.status === 'running' ? 'running' : 'finished');
 
     // 创建卡片（传递原始日志时间戳，保证泳道排序准确）
     const card = await this.repository.saveImportedCard({
@@ -360,16 +516,16 @@ export class LogSyncService {
         : (prompt.project || prompt.sessionId),
       sourceType: prompt.source,
       sourceRef: prompt.sourceRef,
-      status: prompt.status === 'running' ? 'active' : 'completed',
-      runtimeState: prompt.status === 'running' ? 'running' : 'finished',
+      status: nextStatus,
+      runtimeState: nextRuntimeState,
       createdAt: prompt.createdAt
     });
 
-    // 刷新 webview
-    await PrompterPanel.refresh(this.repository);
+    if (!options.skipRefresh) {
+      await PrompterPanel.refresh(this.repository);
+    }
 
-    // 发送通知
-    if (prompt.status === 'running') {
+    if (!options.skipNotify && prompt.status === 'running') {
       const localeText = getLocaleText(state.settings.language);
       vscode.window.showInformationMessage(
         localeText.host.notifications.newRunningPrompt(card.title.slice(0, 30)),

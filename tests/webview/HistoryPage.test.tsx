@@ -68,6 +68,7 @@ describe('HistoryPage', () => {
 
     render(
       <HistoryPage
+        historyImport={state.historyImport}
         dailyStats={state.dailyStats}
         cards={state.cards}
         selectedDate={state.selectedDate}
@@ -95,6 +96,7 @@ describe('HistoryPage', () => {
 
     render(
       <HistoryPage
+        historyImport={state.historyImport}
         dailyStats={state.dailyStats}
         cards={state.cards}
         selectedDate={state.selectedDate}
@@ -111,5 +113,31 @@ describe('HistoryPage', () => {
     expect(screen.getByRole('button', { name: 'Completed 1' })).toBeInTheDocument();
 
     expect(screen.getByRole('button', { name: 'Copy content' })).toBeInTheDocument();
+  });
+
+  it('shows import progress while history is still being indexed', () => {
+    const state = createHistoryState();
+    state.historyImport = {
+      phase: 'scanning-history',
+      processedPrompts: 40,
+      totalPrompts: 100,
+      processedSources: 2,
+      totalSources: 5,
+      foregroundReady: true
+    };
+
+    render(
+      <HistoryPage
+        historyImport={state.historyImport}
+        dailyStats={state.dailyStats}
+        cards={state.cards}
+        selectedDate={state.selectedDate}
+        onSelectDate={() => {}}
+      />
+    );
+
+    expect(screen.getByRole('progressbar', { name: '历史导入进度' })).toHaveAttribute('aria-valuenow', '40');
+    expect(screen.getByText('历史导入中')).toBeInTheDocument();
+    expect(screen.getByText('已处理 40 / 100 条 prompt')).toBeInTheDocument();
   });
 });

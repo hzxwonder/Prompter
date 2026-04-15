@@ -185,6 +185,61 @@ describe('LogSyncService', () => {
     expect(repository.saveImportedCard).toHaveBeenCalled();
   });
 
+  it('hydrates only today cards into the foreground during the first install sync', async () => {
+    const state = createInitialState('2026-04-08T10:10:00.000Z');
+
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      saveImportedCard: vi.fn().mockResolvedValue({
+        id: 'card-2',
+        title: 'Today prompt'
+      })
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+
+    await (service as any).handleNewPrompt(
+      {
+        source: 'codex',
+        sessionId: 'session-today',
+        sourceRef: 'session-today:turn-1',
+        project: 'session-today',
+        userInput: 'Keep workspace responsive.',
+        createdAt: '2026-04-08T10:10:00.000Z',
+        status: 'running'
+      },
+      { foregroundOnly: true, todayBucket: '2026-04-08' }
+    );
+
+    await (service as any).handleNewPrompt(
+      {
+        source: 'codex',
+        sessionId: 'session-old',
+        sourceRef: 'session-old:turn-1',
+        project: 'session-old',
+        userInput: 'This old prompt should stay out of workspace lanes.',
+        createdAt: '2026-04-07T09:00:00.000Z',
+        status: 'completed'
+      },
+      { foregroundOnly: true, todayBucket: '2026-04-08' }
+    );
+
+    expect(repository.saveImportedCard).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        sourceRef: 'session-today:turn-1',
+        status: 'active'
+      })
+    );
+    expect(repository.saveImportedCard).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        sourceRef: 'session-old:turn-1',
+        status: 'completed'
+      })
+    );
+  });
+
   it('auto-acknowledges the previous completed prompt in the same session when a new prompt arrives', async () => {
     const state = createInitialState('2026-04-08T10:30:00.000Z');
     state.cards = [

@@ -121,6 +121,12 @@ const text = {
     },
     history: {
       empty: '还没有 prompt 活动记录。',
+      importProgressLabel: '历史导入进度',
+      importInProgressTitle: '历史导入中',
+      importForegroundReady: '今日 prompt 已优先加载，工作台现在应该可以正常使用。',
+      importProcessedPrompts: (processed: number, total?: number) =>
+        total != null ? `已处理 ${processed} / ${total} 条 prompt` : `已处理 ${processed} 条 prompt`,
+      importProcessedSources: (processed: number, total: number) => `已扫描 ${processed} / ${total} 个会话源`,
       selectedDayDetails: '选中日期详情',
       readOnlySubtitle: '只读展示所选日期记录下来的 prompt 卡片。',
       filterSubtitle: (status: string) => `仅显示「${status}」— 点击标签取消筛选`,
@@ -275,6 +281,12 @@ const text = {
     },
     history: {
       empty: 'No prompt activity yet.',
+      importProgressLabel: 'History import progress',
+      importInProgressTitle: 'Importing history',
+      importForegroundReady: 'Today\'s prompts are ready first, so the workspace should stay responsive.',
+      importProcessedPrompts: (processed: number, total?: number) =>
+        total != null ? `Processed ${processed} / ${total} prompts` : `Processed ${processed} prompts`,
+      importProcessedSources: (processed: number, total: number) => `Scanned ${processed} / ${total} session sources`,
       selectedDayDetails: 'Selected day details',
       readOnlySubtitle: 'Read-only prompt cards captured on the selected day.',
       filterSubtitle: (status: string) => `Showing only "${status}" - click the pill again to clear the filter`,
