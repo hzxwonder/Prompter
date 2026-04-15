@@ -219,12 +219,17 @@ export function HistoryPage({
   onPauseHistoryImport?: () => void;
 }) {
   const localeText = getLocaleText(language);
-  const totalForProgress = historyImport?.totalPrompts ?? historyImport?.totalSources ?? 0;
-  const valueNow = historyImport?.totalPrompts
-    ? historyImport.processedPrompts
-    : historyImport?.totalSources
-      ? historyImport.processedSources
-      : undefined;
+  const useSourceProgress = historyImport?.scope === 'history-backfill';
+  const totalForProgress = useSourceProgress
+    ? (historyImport?.totalSources ?? 0)
+    : (historyImport?.totalPrompts ?? historyImport?.totalSources ?? 0);
+  const valueNow = useSourceProgress
+    ? historyImport?.processedSources
+    : historyImport?.totalPrompts
+      ? historyImport.processedPrompts
+      : historyImport?.totalSources
+        ? historyImport.processedSources
+        : undefined;
   // null = show all; a status value = filter to that status only
   const [statusFilter, setStatusFilter] = useState<PromptCard['status'] | null>(null);
 
@@ -310,7 +315,10 @@ export function HistoryPage({
             />
           </div>
           <p className="history-import-progress__summary">
-            {localeText.history.importProcessedPrompts(historyImport.processedPrompts, historyImport.totalPrompts)}
+            {localeText.history.importProcessedPrompts(
+              historyImport.processedPrompts,
+              useSourceProgress ? undefined : historyImport.totalPrompts
+            )}
           </p>
         </section>
       )}

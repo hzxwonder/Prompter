@@ -115,7 +115,7 @@ describe('HistoryPage', () => {
     expect(screen.getByRole('button', { name: 'Copy content' })).toBeInTheDocument();
   });
 
-  it('shows import progress while history is still being indexed', () => {
+  it('shows backfill progress by source count and omits an inherited prompt total', () => {
     const state = createHistoryState();
     state.historyImport = {
       scope: 'history-backfill',
@@ -140,9 +140,9 @@ describe('HistoryPage', () => {
       />
     );
 
-    expect(screen.getByRole('progressbar', { name: '历史导入进度' })).toHaveAttribute('aria-valuenow', '40');
+    expect(screen.getByRole('progressbar', { name: '历史导入进度' })).toHaveAttribute('aria-valuenow', '2');
     expect(screen.getByText('历史导入中')).toBeInTheDocument();
-    expect(screen.getByText('已处理 40 / 100 条 prompt')).toBeInTheDocument();
+    expect(screen.getByText('已处理 40 条 prompt')).toBeInTheDocument();
   });
 
   it('shows a start button when historical backfill is pending', async () => {

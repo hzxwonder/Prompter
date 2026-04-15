@@ -251,6 +251,7 @@ describe('LogSyncService', () => {
     };
 
     const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    (service as any).historyWorkerCount = 3;
     const parser = (service as any).parser;
     parser.hasPersistedPrompts = vi.fn(() => false);
     parser.discoverScanEntries = vi.fn(() => [
@@ -333,6 +334,7 @@ describe('LogSyncService', () => {
     };
 
     const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    (service as any).historyWorkerCount = 3;
     const parser = (service as any).parser;
     parser.discoverScanEntries = vi.fn(() => [{
       source: 'codex',
@@ -461,6 +463,7 @@ describe('LogSyncService', () => {
 
     expect(repositoryState.historyImport.status).toBe('complete');
     expect(repositoryState.historyImport.pendingEntries).toEqual([]);
+    expect(repositoryState.historyImport.totalPrompts).toBeUndefined();
     expect(repositoryState.historyImport.completedEntries).toEqual([
       'codex:/tmp/old-1.jsonl',
       'codex:/tmp/old-2.jsonl'
@@ -526,6 +529,7 @@ describe('LogSyncService', () => {
     });
 
     const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    (service as any).historyWorkerCount = 3;
     const parser = (service as any).parser;
     parser.discoverScanEntries = vi.fn(() => [
       {

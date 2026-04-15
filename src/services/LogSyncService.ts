@@ -37,7 +37,7 @@ function logSessionKey(source: LogPrompt['source'], sessionId: string): string {
 }
 
 export class LogSyncService {
-  private readonly historyWorkerCount = 3;
+  private readonly historyWorkerCount = 8;
   private intervalId: NodeJS.Timeout | null = null;
   private midnightTimeoutId: NodeJS.Timeout | null = null;
   private watchDebounceId: NodeJS.Timeout | null = null;
@@ -131,6 +131,7 @@ export class LogSyncService {
     let processedPrompts = state.historyImport.processedPrompts;
     let nextIndex = 0;
     let mutationQueue = Promise.resolve();
+    let lastPanelRefreshAt = 0;
 
     const scheduleMutation = async (fn: () => Promise<void>) => {
       mutationQueue = mutationQueue.then(fn);
@@ -175,6 +176,7 @@ export class LogSyncService {
                 processedSources: completedEntries.length,
                 totalSources: completedEntries.length + pendingEntryMap.size,
                 processedPrompts,
+                totalPrompts: undefined,
                 pendingEntries: [...pendingEntryMap.values()],
                 completedEntries
               });
@@ -199,12 +201,19 @@ export class LogSyncService {
                 status: 'running',
                 foregroundReady: true,
                 processedPrompts,
+                totalPrompts: undefined,
                 processedSources: completedEntries.length,
                 totalSources: completedEntries.length + pendingEntryMap.size,
                 pendingEntries: [...pendingEntryMap.values()],
                 completedEntries
               });
-              await PrompterPanel.refresh(this.repository);
+              const shouldRefreshPanel =
+                completedEntries.length === pendingEntries.length ||
+                Date.now() - lastPanelRefreshAt >= 250;
+              if (shouldRefreshPanel) {
+                lastPanelRefreshAt = Date.now();
+                await PrompterPanel.refresh(this.repository);
+              }
             });
           } catch (error) {
             this.pauseHistoryRequested = true;
@@ -213,6 +222,7 @@ export class LogSyncService {
                 scope: 'history-backfill',
                 status: 'paused',
                 foregroundReady: true,
+                totalPrompts: undefined,
                 lastError: error instanceof Error ? error.message : String(error),
                 pendingEntries: [...pendingEntryMap.values()],
                 completedEntries
@@ -230,7 +240,8 @@ export class LogSyncService {
       await this.repository.setHistoryImport({
         scope: 'history-backfill',
         status: latestState.historyImport.pendingEntries.length === 0 ? 'complete' : (this.pauseHistoryRequested ? 'paused' : latestState.historyImport.status),
-        foregroundReady: true
+        foregroundReady: true,
+        totalPrompts: undefined
       });
       await PrompterPanel.refresh(this.repository);
     }
@@ -424,7 +435,7 @@ export class LogSyncService {
       scope: 'history-backfill',
       status: pendingEntries.length === 0 ? 'complete' : (state.historyImport.status === 'paused' ? 'paused' : 'idle'),
       processedPrompts: state.historyImport.processedPrompts,
-      totalPrompts: state.historyImport.totalPrompts,
+      totalPrompts: undefined,
       processedSources: completedEntries.length,
       totalSources: completedEntries.length + pendingEntries.length,
       foregroundReady: true,
@@ -528,9 +539,19 @@ export class LogSyncService {
       } = this.shouldRestrictIncrementalSync(state)
         ? this.syncForegroundSessionsOnly()
         : this.parser.sync();
+      const restrictedTodayBucket = new Date().toISOString().slice(0, 10);
 
       for (const prompt of newPrompts) {
-        await this.handleNewPrompt(prompt);
+        await this.handleNewPrompt(
+          prompt,
+          this.shouldRestrictIncrementalSync(state)
+            ? {
+                foregroundOnly: true,
+                todayBucket: restrictedTodayBucket,
+                skipNotify: true
+              }
+            : {}
+        );
       }
 
       // Handle prompts that just transitioned from running → completed
@@ -615,7 +636,7 @@ export class LogSyncService {
 
     for (const entry of eligibleEntries) {
       const prompts = this.parser.scanEntry(entry).filter(
-        (prompt) => toDateBucket(prompt.createdAt) === todayBucket || !prompt.completedAt
+        (prompt) => toDateBucket(prompt.createdAt) === todayBucket
       );
       const result = this.parser.applySessionScan(prompts, runningSessions);
       inserted.push(...result.inserted);
