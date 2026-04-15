@@ -24,6 +24,7 @@ export interface WorkspaceDraft {
 type PrompterAction =
   | { type: 'state:replace'; payload: PrompterState }
   | { type: 'state:sync'; payload: PrompterState }
+  | { type: 'historyImport:sync'; payload: PrompterState['historyImport'] }
   | { type: 'view:set'; payload: { view: PrompterState['activeView'] } }
   | { type: 'history:selectDate'; payload: { date: string } }
   | { type: 'settings:update'; payload: Partial<PrompterSettings> }
@@ -70,6 +71,14 @@ function prompterReducer(store: PrompterStoreState, action: PrompterAction): Pro
         state: {
           ...action.payload,
           activeView: store.state.activeView
+        }
+      };
+    case 'historyImport:sync':
+      return {
+        ...store,
+        state: {
+          ...store.state,
+          historyImport: action.payload
         }
       };
     case 'view:set':

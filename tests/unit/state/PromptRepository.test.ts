@@ -342,7 +342,8 @@ describe('PromptRepository', () => {
           id: 'entry-1',
           sourceType: 'codex',
           filePath: '/tmp/codex/session.jsonl',
-          dateBucket: '2026-04-07'
+          dateBucket: '2026-04-07',
+          lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
         }
       ],
       completedEntries: ['entry-0'],
@@ -358,11 +359,106 @@ describe('PromptRepository', () => {
         id: 'entry-1',
         sourceType: 'codex',
         filePath: '/tmp/codex/session.jsonl',
-        dateBucket: '2026-04-07'
+        dateBucket: '2026-04-07',
+        lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
       }
     ]);
     expect(snapshot.historyImport.completedEntries).toEqual(['entry-0']);
     expect(snapshot.historyImport.warningAcknowledged).toBe(true);
+  });
+
+  it('loads legacy history import checkpoints without mtime metadata', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
+    const now = () => '2026-04-08T10:00:00.000Z';
+
+    await writeFile(
+      join(dir, 'history-import.json'),
+      JSON.stringify({
+        scope: 'history-backfill',
+        status: 'paused',
+        processedPrompts: 12,
+        processedSources: 1,
+        totalSources: 3,
+        foregroundReady: true,
+        warningAcknowledged: true,
+        pendingEntries: [
+          {
+            id: 'entry-1',
+            sourceType: 'codex',
+            filePath: '/tmp/codex/session.jsonl',
+            dateBucket: '2026-04-07'
+          }
+        ],
+        completedEntries: ['entry-0'],
+        lastError: 'paused by user'
+      }),
+      'utf8'
+    );
+
+    const repo = await PromptRepository.create(dir, now);
+    const snapshot = await repo.getState();
+
+    expect(snapshot.historyImport.pendingEntries).toEqual([
+      {
+        id: 'entry-1',
+        sourceType: 'codex',
+        filePath: '/tmp/codex/session.jsonl',
+        dateBucket: '2026-04-07',
+        lastModifiedMs: 0
+      }
+    ]);
+    expect(snapshot.historyImport.completedEntries).toEqual(['entry-0']);
+    expect(snapshot.historyImport.completedEntryMtims).toEqual({});
+  });
+
+  it('updates only history-import.json when persisting history import progress', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
+    const now = () => '2026-04-08T10:00:00.000Z';
+    const repo = await PromptRepository.create(dir, now);
+
+    await repo.saveDraft({
+      title: 'Explain src/api.ts',
+      content: 'Review src/api.ts for race conditions',
+      groupName: 'api.ts',
+      sourceType: 'manual',
+      fileRefs: [{ path: 'src/api.ts', startLine: 1, endLine: 20 }]
+    });
+
+    const cardsPath = join(dir, 'cards.json');
+    const settingsPath = join(dir, 'settings.json');
+    const historyImportPath = join(dir, 'history-import.json');
+    const beforeCards = await readFile(cardsPath, 'utf8');
+    const beforeSettings = await readFile(settingsPath, 'utf8');
+    const beforeHistoryImport = await readFile(historyImportPath, 'utf8');
+
+    await repo.setHistoryImport({
+      scope: 'history-backfill',
+      status: 'running',
+      processedPrompts: 5,
+      processedSources: 1,
+      totalSources: 3,
+      foregroundReady: true,
+      warningAcknowledged: false,
+      pendingEntries: [
+        {
+          id: 'entry-1',
+          sourceType: 'codex',
+          filePath: '/tmp/codex/session.jsonl',
+          dateBucket: '2026-04-07',
+          lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
+        }
+      ],
+      completedEntries: [],
+      completedEntryMtims: {}
+    });
+
+    const afterCards = await readFile(cardsPath, 'utf8');
+    const afterSettings = await readFile(settingsPath, 'utf8');
+    const afterHistoryImport = await readFile(historyImportPath, 'utf8');
+
+    expect(afterCards).toBe(beforeCards);
+    expect(afterSettings).toBe(beforeSettings);
+    expect(afterHistoryImport).not.toBe(beforeHistoryImport);
   });
 
   it('persists settings updates and clears cached files', async () => {

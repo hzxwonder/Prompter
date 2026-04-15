@@ -24,6 +24,10 @@ export function usePrompterStore(initialState: PrompterState) {
     dispatch({ type: 'state:sync', payload: nextState });
   }, []);
 
+  const syncHistoryImport = useCallback((nextHistoryImport: PrompterState['historyImport']) => {
+    dispatch({ type: 'historyImport:sync', payload: nextHistoryImport });
+  }, []);
+
   const setView = useCallback((view: PrompterView) => {
     dispatch({ type: 'view:set', payload: { view } });
   }, []);
@@ -75,6 +79,7 @@ export function usePrompterStore(initialState: PrompterState) {
       lastSavedCardId: store.lastSavedCardId,
       replaceState,
       syncState,
+      syncHistoryImport,
       setView,
       selectHistoryDate,
       updateSettings,
@@ -100,6 +105,7 @@ export function usePrompterStore(initialState: PrompterState) {
       selectHistoryDate,
       store,
       syncState,
+      syncHistoryImport,
       updateSettings,
       updateWorkspaceDraft
     ]

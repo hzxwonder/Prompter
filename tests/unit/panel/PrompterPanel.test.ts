@@ -203,6 +203,38 @@ describe('PrompterPanel', () => {
     expect(pauseHistoryImport).toHaveBeenCalledTimes(1);
   });
 
+  it('pushes history import updates without requiring a full panel refresh', async () => {
+    const postMessage = vi.fn();
+    const vscode = await import('vscode');
+
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValue(
+      createMockPanel(postMessage, () => createDisposable())
+    );
+
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    state.historyImport = {
+      ...state.historyImport,
+      scope: 'history-backfill',
+      status: 'running',
+      processedSources: 3,
+      totalSources: 10
+    };
+
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state)
+    };
+
+    await PrompterPanel.createOrShow({} as never, repository as never);
+    postMessage.mockClear();
+
+    await PrompterPanel.syncHistoryImport(repository as never);
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'historyImport:updated',
+      payload: state.historyImport
+    });
+  });
+
   it('asks for confirmation before starting history import for the first time', async () => {
     const postMessage = vi.fn();
     const startHistoryImport = vi.fn().mockResolvedValue(undefined);

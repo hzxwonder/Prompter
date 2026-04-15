@@ -279,6 +279,58 @@ describe('LogParser Codex turn completion', () => {
     ]);
   });
 
+  it('does not emit a duplicate codex prompt when both user_message and item.completed describe the same turn', () => {
+    const sessionId = 'rollout-2026-04-15T10-00-00-019d8b01-ed0f-7da2-9fd9-103925ad25fc';
+    const lines = [
+      JSON.stringify({
+        timestamp: '2026-04-15T10:00:00.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'task_started',
+          turn_id: 'turn-1'
+        }
+      }),
+      JSON.stringify({
+        timestamp: '2026-04-15T10:00:01.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'user_message',
+          message: '## My request for Codex:\nfirst prompt'
+        }
+      }),
+      JSON.stringify({
+        timestamp: '2026-04-15T10:00:20.000Z',
+        type: 'item.completed',
+        item: {
+          type: 'message',
+          role: 'user',
+          turn_id: 'turn-1',
+          content: [
+            {
+              type: 'input_text',
+              text: '## My request for Codex:\nfirst prompt'
+            }
+          ]
+        }
+      }),
+      JSON.stringify({
+        timestamp: '2026-04-15T10:00:30.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'task_complete',
+          turn_id: 'turn-1'
+        }
+      })
+    ];
+
+    expect(extractCodexPromptRecords(lines, sessionId, '2026-04-15')).toEqual([
+      expect.objectContaining({
+        sourceRef: `${sessionId}:turn-1`,
+        userInput: 'first prompt'
+      })
+    ]);
+  });
+
   it('keeps only the unfinished turn running within a codex session', () => {
     const sessionId = 'rollout-2026-04-12T20-00-00-019d8174-b2f9-7cb3-99bc-85aa22c13ad8';
     const records = extractCodexPromptRecords([

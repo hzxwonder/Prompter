@@ -30,7 +30,7 @@ interface StoredPromptRecord {
   completionKind?: 'completed' | 'aborted';
 }
 
-interface ParsedPromptRecord {
+export interface ParsedPromptRecord {
   source: LogPrompt['source'];
   sessionId: string;
   sourceRef: string;
@@ -309,11 +309,39 @@ export function extractCodexPromptRecords(
     }
   }
 
-  return prompts.map((prompt) => ({
-    ...prompt,
-    completedAt: taskCompletedAtByTurnId.get(prompt.sourceRef.slice(sessionId.length + 1)) ?? prompt.completedAt,
-    completionKind: completionKindByTurnId.get(prompt.sourceRef.slice(sessionId.length + 1)) ?? prompt.completionKind
-  }));
+  const dedupedPrompts = new Map<string, ParsedPromptRecord>();
+
+  for (const prompt of prompts) {
+    const turnId = prompt.sourceRef.slice(sessionId.length + 1);
+    const completedAt = taskCompletedAtByTurnId.get(turnId) ?? prompt.completedAt;
+    const completionKind = completionKindByTurnId.get(turnId) ?? prompt.completionKind;
+    const existing = dedupedPrompts.get(prompt.sourceRef);
+
+    if (!existing) {
+      dedupedPrompts.set(prompt.sourceRef, {
+        ...prompt,
+        completedAt,
+        completionKind
+      });
+      continue;
+    }
+
+    const existingCreatedAtMs = Date.parse(existing.createdAt);
+    const nextCreatedAtMs = Date.parse(prompt.createdAt);
+    const shouldUseEarlierCreatedAt =
+      Number.isNaN(existingCreatedAtMs) ||
+      (!Number.isNaN(nextCreatedAtMs) && nextCreatedAtMs < existingCreatedAtMs);
+
+    dedupedPrompts.set(prompt.sourceRef, {
+      ...existing,
+      userInput: prompt.userInput || existing.userInput,
+      createdAt: shouldUseEarlierCreatedAt ? prompt.createdAt : existing.createdAt,
+      completedAt: completedAt ?? existing.completedAt,
+      completionKind: completionKind ?? existing.completionKind
+    });
+  }
+
+  return [...dedupedPrompts.values()];
 }
 
 export function resolvePromptStatuses(

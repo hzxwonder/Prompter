@@ -12,6 +12,16 @@ await Promise.all([
     logLevel: 'info'
   }),
   esbuild.build({
+    entryPoints: ['src/workers/logParserWorker.ts'],
+    outfile: 'dist/logParserWorker.js',
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    sourcemap: true,
+    external: ['vscode'],
+    logLevel: 'info'
+  }),
+  esbuild.build({
     entryPoints: ['webview/src/main.tsx'],
     outfile: 'dist/webview/main.js',
     bundle: true,

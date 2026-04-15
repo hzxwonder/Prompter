@@ -1,10 +1,39 @@
-import * as vscode from 'vscode';
+import type * as vscode from 'vscode';
 
 let outputChannel: vscode.OutputChannel | null = null;
+let vscodeModuleCache: typeof import('vscode') | null | undefined;
+
+function getVscodeModule(): typeof import('vscode') | null {
+  if (vscodeModuleCache !== undefined) {
+    return vscodeModuleCache;
+  }
+
+  try {
+    const dynamicRequire = typeof require === 'function' ? require : undefined;
+    vscodeModuleCache = dynamicRequire ? dynamicRequire('vscode') as typeof import('vscode') : null;
+  } catch {
+    vscodeModuleCache = null;
+  }
+
+  return vscodeModuleCache;
+}
 
 export function getOutputChannel(): vscode.OutputChannel {
   if (!outputChannel) {
-    outputChannel = vscode.window.createOutputChannel('Prompter');
+    const vscodeModule = getVscodeModule();
+    if (!vscodeModule) {
+      return {
+        append() {},
+        appendLine() {},
+        show() {},
+        clear() {},
+        dispose() {},
+        hide() {},
+        replace() {},
+        name: 'Prompter'
+      } as vscode.OutputChannel;
+    }
+    outputChannel = vscodeModule.window.createOutputChannel('Prompter');
   }
   return outputChannel;
 }

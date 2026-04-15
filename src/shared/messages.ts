@@ -1,6 +1,7 @@
 import type {
   BuiltinTone,
   FileRef,
+  HistoryImportState,
   ModularPrompt,
   PromptCard,
   PromptSourceType,
@@ -13,6 +14,7 @@ import type {
 export type ExtensionToWebviewMessage =
   | { type: 'hydrate'; payload: PrompterState }
   | { type: 'state:replace'; payload: PrompterState }
+  | { type: 'historyImport:updated'; payload: HistoryImportState }
   | { type: 'draft:saved'; payload: { card: PromptCard; state: PrompterState } }
   | { type: 'card:updated'; payload: { card: PromptCard; state: PrompterState } }
   | { type: 'cards:updated'; payload: { state: PrompterState } }

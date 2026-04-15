@@ -84,6 +84,16 @@ export class PrompterPanel {
     }
   }
 
+  static async syncHistoryImport(repository: PromptRepository): Promise<void> {
+    if (PrompterPanel.currentPanel) {
+      const state = await repository.getState();
+      PrompterPanel.currentPanel.panel.webview.postMessage({
+        type: 'historyImport:updated',
+        payload: state.historyImport
+      });
+    }
+  }
+
   private constructor(
     private readonly panel: vscode.WebviewPanel,
     private readonly extensionUri: vscode.Uri,

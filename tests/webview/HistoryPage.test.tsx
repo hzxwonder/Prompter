@@ -160,7 +160,8 @@ describe('HistoryPage', () => {
           id: 'codex:/tmp/old.jsonl',
           sourceType: 'codex',
           filePath: '/tmp/old.jsonl',
-          dateBucket: '2026-04-07'
+          dateBucket: '2026-04-07',
+          lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
         }
       ],
       completedEntries: []
@@ -198,7 +199,8 @@ describe('HistoryPage', () => {
           id: 'codex:/tmp/old.jsonl',
           sourceType: 'codex',
           filePath: '/tmp/old.jsonl',
-          dateBucket: '2026-04-07'
+          dateBucket: '2026-04-07',
+          lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
         }
       ],
       completedEntries: []

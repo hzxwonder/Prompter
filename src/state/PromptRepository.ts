@@ -252,7 +252,8 @@ function isHistoryImportEntry(value: unknown): value is HistoryImportEntry {
     typeof entry.id === 'string' &&
     (entry.sourceType === 'claude-code' || entry.sourceType === 'codex' || entry.sourceType === 'roo-code') &&
     typeof entry.filePath === 'string' &&
-    typeof entry.dateBucket === 'string'
+    typeof entry.dateBucket === 'string' &&
+    (typeof entry.lastModifiedMs === 'number' || typeof entry.lastModifiedMs === 'undefined')
   );
 }
 
@@ -262,11 +263,23 @@ function normalizeHistoryImport(
 ): { historyImport: HistoryImportState; migrated: boolean } {
   const legacyPhase = historyImport?.phase;
   const pendingEntries = Array.isArray(historyImport?.pendingEntries)
-    ? historyImport.pendingEntries.filter(isHistoryImportEntry)
+    ? historyImport.pendingEntries
+        .filter(isHistoryImportEntry)
+        .map((entry) => ({
+          ...entry,
+          lastModifiedMs: typeof entry.lastModifiedMs === 'number' ? entry.lastModifiedMs : 0
+        }))
     : fallback.pendingEntries;
   const completedEntries = Array.isArray(historyImport?.completedEntries)
     ? historyImport.completedEntries.filter((entry): entry is string => typeof entry === 'string')
     : fallback.completedEntries;
+  const completedEntryMtims = historyImport?.completedEntryMtims && typeof historyImport.completedEntryMtims === 'object'
+    ? Object.fromEntries(
+        Object.entries(historyImport.completedEntryMtims).filter((entry): entry is [string, number] =>
+          typeof entry[0] === 'string' && typeof entry[1] === 'number'
+        )
+      )
+    : fallback.completedEntryMtims ?? {};
 
   let scope = historyImport?.scope;
   if (!scope) {
@@ -301,6 +314,7 @@ function normalizeHistoryImport(
     warningAcknowledged: historyImport?.warningAcknowledged ?? fallback.warningAcknowledged,
     pendingEntries,
     completedEntries,
+    completedEntryMtims,
     lastError: historyImport?.lastError
   };
 
@@ -314,7 +328,9 @@ function normalizeHistoryImport(
       !Array.isArray(historyImport.pendingEntries) ||
       !Array.isArray(historyImport.completedEntries) ||
       pendingEntries.length !== (historyImport.pendingEntries?.length ?? 0) ||
-      completedEntries.length !== (historyImport.completedEntries?.length ?? 0)
+      completedEntries.length !== (historyImport.completedEntries?.length ?? 0) ||
+      pendingEntries.some((entry) => entry.lastModifiedMs === 0) ||
+      typeof historyImport.completedEntryMtims !== 'object'
     );
 
   return { historyImport: normalized, migrated };
@@ -523,10 +539,11 @@ export class PromptRepository {
         ...this.state.historyImport,
         ...historyImport,
         pendingEntries: historyImport.pendingEntries ?? this.state.historyImport.pendingEntries,
-        completedEntries: historyImport.completedEntries ?? this.state.historyImport.completedEntries
+        completedEntries: historyImport.completedEntries ?? this.state.historyImport.completedEntries,
+        completedEntryMtims: historyImport.completedEntryMtims ?? this.state.historyImport.completedEntryMtims
       }
     };
-    await this.persist();
+    await this.persistHistoryImport();
   }
 
   async saveDraft(input: SaveDraftInput): Promise<PromptCard> {
@@ -933,12 +950,16 @@ export class PromptRepository {
     await this.persist();
   }
 
+  private async persistHistoryImport(): Promise<void> {
+    await this.store.writeJson('history-import.json', this.state.historyImport);
+  }
+
   async persist(): Promise<void> {
     await Promise.all([
       this.store.writeJson('cards.json', this.state.cards),
       this.store.writeJson('modular-prompts.json', this.state.modularPrompts),
       this.store.writeJson('daily-stats.json', this.state.dailyStats),
-      this.store.writeJson('history-import.json', this.state.historyImport),
+      this.persistHistoryImport(),
       this.store.writeJson('settings.json', this.state.settings),
       this.store.writeJson('session-groups.json', this.sessionGroups)
     ]);

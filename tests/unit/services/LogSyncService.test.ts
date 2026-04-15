@@ -19,6 +19,7 @@ vi.mock('vscode', () => ({
 vi.mock('../../../src/panel/PrompterPanel', () => ({
   PrompterPanel: {
     refresh: vi.fn().mockResolvedValue(undefined),
+    syncHistoryImport: vi.fn().mockResolvedValue(undefined),
     playCompletionTone: vi.fn(),
     playCustomTone: vi.fn()
   }
@@ -43,6 +44,12 @@ vi.mock('../../../src/logger', () => ({
 describe('LogSyncService', () => {
   beforeEach(() => {
     showInformationMessage.mockClear();
+  });
+
+  it('derives a bounded history worker count from available CPU parallelism', () => {
+    expect((LogSyncService as any).resolveHistoryWorkerCount(16)).toBe(8);
+    expect((LogSyncService as any).resolveHistoryWorkerCount(6)).toBe(4);
+    expect((LogSyncService as any).resolveHistoryWorkerCount(2)).toBe(1);
   });
 
   it('localizes completion notifications using the current settings language', async () => {
@@ -296,7 +303,8 @@ describe('LogSyncService', () => {
             id: 'codex:/tmp/old.jsonl',
             sourceType: 'codex',
             filePath: '/tmp/old.jsonl',
-            dateBucket: '2026-04-07'
+            dateBucket: '2026-04-07',
+            lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
           }
         ]
       })
@@ -316,7 +324,8 @@ describe('LogSyncService', () => {
           id: 'codex:/tmp/old.jsonl',
           sourceType: 'codex',
           filePath: '/tmp/old.jsonl',
-          dateBucket: '2026-04-07'
+          dateBucket: '2026-04-07',
+          lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
         }
       ],
       completedEntries: []
@@ -403,13 +412,15 @@ describe('LogSyncService', () => {
           id: 'codex:/tmp/old-1.jsonl',
           sourceType: 'codex',
           filePath: '/tmp/old-1.jsonl',
-          dateBucket: '2026-04-07'
+          dateBucket: '2026-04-07',
+          lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
         },
         {
           id: 'codex:/tmp/old-2.jsonl',
           sourceType: 'codex',
           filePath: '/tmp/old-2.jsonl',
-          dateBucket: '2026-04-06'
+          dateBucket: '2026-04-06',
+          lastModifiedMs: Date.parse('2026-04-06T10:00:00.000Z')
         }
       ],
       completedEntries: []
@@ -471,6 +482,185 @@ describe('LogSyncService', () => {
     expect(repositoryState.historyImport.processedSources).toBe(2);
   });
 
+  it('prepares history backfill without requeueing unchanged completed entries', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    state.historyImport = {
+      ...state.historyImport,
+      scope: 'history-backfill',
+      status: 'idle',
+      foregroundReady: true,
+      pendingEntries: [],
+      completedEntries: ['codex:/tmp/old.jsonl'],
+      completedEntryMtims: {
+        'codex:/tmp/old.jsonl': Date.parse('2026-04-07T10:00:00.000Z')
+      }
+    };
+
+    const repositoryState = structuredClone(state);
+    const repository = {
+      getState: vi.fn(async () => repositoryState),
+      setHistoryImport: vi.fn(async (nextHistoryImport) => {
+        repositoryState.historyImport = {
+          ...repositoryState.historyImport,
+          ...nextHistoryImport
+        };
+      })
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const parser = (service as any).parser;
+    parser.discoverScanEntries = vi.fn(() => [
+      {
+        source: 'codex',
+        sessionId: 'old-session',
+        path: '/tmp/old.jsonl',
+        dateBucket: '2026-04-07',
+        lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
+      }
+    ]);
+
+    await (service as any).prepareHistoryBackfill();
+
+    expect(repositoryState.historyImport.pendingEntries).toEqual([]);
+    expect(repositoryState.historyImport.completedEntries).toEqual(['codex:/tmp/old.jsonl']);
+  });
+
+  it('requeues completed history entries when their mtime changes', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    state.historyImport = {
+      ...state.historyImport,
+      scope: 'history-backfill',
+      status: 'idle',
+      foregroundReady: true,
+      pendingEntries: [],
+      completedEntries: ['codex:/tmp/old.jsonl'],
+      completedEntryMtims: {
+        'codex:/tmp/old.jsonl': Date.parse('2026-04-07T10:00:00.000Z')
+      }
+    };
+
+    const repositoryState = structuredClone(state);
+    const repository = {
+      getState: vi.fn(async () => repositoryState),
+      setHistoryImport: vi.fn(async (nextHistoryImport) => {
+        repositoryState.historyImport = {
+          ...repositoryState.historyImport,
+          ...nextHistoryImport
+        };
+      })
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const parser = (service as any).parser;
+    parser.discoverScanEntries = vi.fn(() => [
+      {
+        source: 'codex',
+        sessionId: 'old-session',
+        path: '/tmp/old.jsonl',
+        dateBucket: '2026-04-07',
+        lastModifiedMs: Date.parse('2026-04-07T11:00:00.000Z')
+      }
+    ]);
+
+    await (service as any).prepareHistoryBackfill();
+
+    expect(repositoryState.historyImport.completedEntries).toEqual([]);
+    expect(repositoryState.historyImport.pendingEntries).toEqual([
+      {
+        id: 'codex:/tmp/old.jsonl',
+        sourceType: 'codex',
+        filePath: '/tmp/old.jsonl',
+        dateBucket: '2026-04-07',
+        lastModifiedMs: Date.parse('2026-04-07T11:00:00.000Z')
+      }
+    ]);
+  });
+
+  it('records completed entry mtimes during history backfill and avoids progress refresh churn', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    state.historyImport = {
+      ...state.historyImport,
+      scope: 'history-backfill',
+      status: 'idle',
+      foregroundReady: true,
+      pendingEntries: [
+        {
+          id: 'codex:/tmp/old-1.jsonl',
+          sourceType: 'codex',
+          filePath: '/tmp/old-1.jsonl',
+          dateBucket: '2026-04-07',
+          lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
+        },
+        {
+          id: 'codex:/tmp/old-2.jsonl',
+          sourceType: 'codex',
+          filePath: '/tmp/old-2.jsonl',
+          dateBucket: '2026-04-06',
+          lastModifiedMs: Date.parse('2026-04-06T10:00:00.000Z')
+        }
+      ],
+      completedEntries: [],
+      completedEntryMtims: {}
+    };
+
+    const repositoryState = structuredClone(state);
+    const repository = {
+      getState: vi.fn(async () => repositoryState),
+      setHistoryImport: vi.fn(async (nextHistoryImport) => {
+        repositoryState.historyImport = {
+          ...repositoryState.historyImport,
+          ...nextHistoryImport
+        };
+      }),
+      saveImportedCards: vi.fn().mockResolvedValue([])
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const parser = (service as any).parser;
+    parser.discoverScanEntries = vi.fn(() => [
+      {
+        source: 'codex',
+        sessionId: 'old-1',
+        path: '/tmp/old-1.jsonl',
+        dateBucket: '2026-04-07',
+        lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
+      },
+      {
+        source: 'codex',
+        sessionId: 'old-2',
+        path: '/tmp/old-2.jsonl',
+        dateBucket: '2026-04-06',
+        lastModifiedMs: Date.parse('2026-04-06T10:00:00.000Z')
+      }
+    ]);
+    parser.getRunningSessionsSnapshot = vi.fn(() => new Set<string>());
+    parser.scanEntry = vi.fn((entry) => [
+      {
+        source: 'codex',
+        sessionId: entry.sessionId,
+        sourceRef: `${entry.sessionId}:turn-1`,
+        project: entry.sessionId,
+        userInput: `Import ${entry.sessionId}`,
+        createdAt: `${entry.dateBucket}T10:00:00.000Z`,
+        status: 'completed'
+      }
+    ]);
+    parser.applySessionScan = vi.fn((prompts) => ({ inserted: prompts }));
+
+    const { PrompterPanel } = await import('../../../src/panel/PrompterPanel');
+    vi.mocked(PrompterPanel.refresh).mockClear();
+    vi.mocked(PrompterPanel.syncHistoryImport).mockClear();
+
+    await service.runHistoryBackfill();
+
+    expect(repositoryState.historyImport.completedEntryMtims).toEqual({
+      'codex:/tmp/old-1.jsonl': Date.parse('2026-04-07T10:00:00.000Z'),
+      'codex:/tmp/old-2.jsonl': Date.parse('2026-04-06T10:00:00.000Z')
+    });
+    expect(PrompterPanel.syncHistoryImport).toHaveBeenCalled();
+    expect(PrompterPanel.refresh).toHaveBeenCalledTimes(1);
+  });
+
   it('pauses history backfill and preserves remaining pending entries for resume', async () => {
     const state = createInitialState('2026-04-08T10:00:00.000Z');
     state.historyImport = {
@@ -483,25 +673,29 @@ describe('LogSyncService', () => {
           id: 'codex:/tmp/pending-1.jsonl',
           sourceType: 'codex',
           filePath: '/tmp/pending-1.jsonl',
-          dateBucket: '2026-04-07'
+          dateBucket: '2026-04-07',
+          lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
         },
         {
           id: 'codex:/tmp/pending-2.jsonl',
           sourceType: 'codex',
           filePath: '/tmp/pending-2.jsonl',
-          dateBucket: '2026-04-06'
+          dateBucket: '2026-04-06',
+          lastModifiedMs: Date.parse('2026-04-06T10:00:00.000Z')
         },
         {
           id: 'codex:/tmp/pending-3.jsonl',
           sourceType: 'codex',
           filePath: '/tmp/pending-3.jsonl',
-          dateBucket: '2026-04-05'
+          dateBucket: '2026-04-05',
+          lastModifiedMs: Date.parse('2026-04-05T10:00:00.000Z')
         },
         {
           id: 'codex:/tmp/pending-4.jsonl',
           sourceType: 'codex',
           filePath: '/tmp/pending-4.jsonl',
-          dateBucket: '2026-04-04'
+          dateBucket: '2026-04-04',
+          lastModifiedMs: Date.parse('2026-04-04T10:00:00.000Z')
         }
       ],
       completedEntries: []
@@ -591,7 +785,8 @@ describe('LogSyncService', () => {
         id: 'codex:/tmp/pending-4.jsonl',
         sourceType: 'codex',
         filePath: '/tmp/pending-4.jsonl',
-        dateBucket: '2026-04-04'
+        dateBucket: '2026-04-04',
+        lastModifiedMs: Date.parse('2026-04-04T10:00:00.000Z')
       }
     ]);
   });

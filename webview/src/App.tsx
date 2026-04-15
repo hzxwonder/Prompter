@@ -32,6 +32,7 @@ export function App({
     workspaceDraft,
     lastSavedCardId,
     syncState,
+    syncHistoryImport,
     setView,
     selectHistoryDate,
     updateSettings,
@@ -99,7 +100,11 @@ export function App({
     if (lastMessage?.type === 'state:replace') {
       syncState(lastMessage.payload);
     }
-  }, [insertImportedText, lastMessage, markDraftSaved, syncState, updateSettings]);
+
+    if (lastMessage?.type === 'historyImport:updated') {
+      syncHistoryImport(lastMessage.payload);
+    }
+  }, [insertImportedText, lastMessage, markDraftSaved, syncHistoryImport, syncState, updateSettings]);
 
   const handleViewChange = (view: PrompterView) => {
     if (view !== 'shortcuts') {

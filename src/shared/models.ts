@@ -72,6 +72,7 @@ export interface HistoryImportEntry {
   sourceType: 'claude-code' | 'codex' | 'roo-code';
   filePath: string;
   dateBucket: string;
+  lastModifiedMs: number;
 }
 
 function createDefaultShortcuts(): Record<PrompterCommandId, ShortcutConfig> {
@@ -134,6 +135,7 @@ export interface HistoryImportState {
   warningAcknowledged: boolean;
   pendingEntries: HistoryImportEntry[];
   completedEntries: string[];
+  completedEntryMtims?: Record<string, number>;
   lastError?: string;
 }
 
@@ -158,7 +160,8 @@ export function createInitialHistoryImportState(): HistoryImportState {
     foregroundReady: false,
     warningAcknowledged: false,
     pendingEntries: [],
-    completedEntries: []
+    completedEntries: [],
+    completedEntryMtims: {}
   };
 }
 
