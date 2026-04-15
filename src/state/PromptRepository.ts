@@ -350,6 +350,7 @@ interface SaveImportedCardInput {
 
 interface SaveImportedCardOptions {
   persist?: boolean;
+  rebuildStats?: boolean;
 }
 
 interface SaveModularPromptInput {
@@ -582,10 +583,11 @@ export class PromptRepository {
     const savedCards: PromptCard[] = [];
 
     for (const input of inputs) {
-      savedCards.push(await this.saveImportedCardInternal(input, { persist: false }));
+      savedCards.push(await this.saveImportedCardInternal(input, { persist: false, rebuildStats: false }));
     }
 
     if (inputs.length > 0) {
+      this.state.dailyStats = rebuildDailyStats(this.state.cards);
       await this.persist();
     }
 
@@ -642,7 +644,9 @@ export class PromptRepository {
         dateBucket: toDateBucket(cardCreatedAt)
       };
       this.state.cards[legacyIndex] = updatedCard;
-      this.state.dailyStats = rebuildDailyStats(this.state.cards);
+      if (options.rebuildStats !== false) {
+        this.state.dailyStats = rebuildDailyStats(this.state.cards);
+      }
       if (options.persist !== false) {
         await this.persist();
       }
@@ -672,7 +676,9 @@ export class PromptRepository {
         completedAt: input.status === 'completed' ? nowIso : undefined
       };
       this.state.cards[reusableUnusedIndex] = updatedCard;
-      this.state.dailyStats = rebuildDailyStats(this.state.cards);
+      if (options.rebuildStats !== false) {
+        this.state.dailyStats = rebuildDailyStats(this.state.cards);
+      }
       if (options.persist !== false) {
         await this.persist();
       }
@@ -699,7 +705,9 @@ export class PromptRepository {
     };
 
     this.state.cards.unshift(card);
-    this.state.dailyStats = rebuildDailyStats(this.state.cards);
+    if (options.rebuildStats !== false) {
+      this.state.dailyStats = rebuildDailyStats(this.state.cards);
+    }
     if (options.persist !== false) {
       await this.persist();
     }

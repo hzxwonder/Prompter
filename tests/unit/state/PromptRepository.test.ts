@@ -321,6 +321,15 @@ describe('PromptRepository', () => {
     expect(persistSpy).toHaveBeenCalledTimes(1);
     const snapshot = await repo.getState();
     expect(snapshot.cards).toHaveLength(2);
+    expect(snapshot.dailyStats).toEqual([
+      {
+        date: '2026-04-08',
+        usedCount: 2,
+        unusedCount: 0,
+        completedCount: 2,
+        totalCount: 2
+      }
+    ]);
   });
 
   it('persists resumable history import checkpoints across reloads', async () => {

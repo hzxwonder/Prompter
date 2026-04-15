@@ -20,6 +20,11 @@ const WATCH_ROOTS = [
 const AUTO_COMPLETE_AFTER_MS = 2 * 60 * 60 * 1000;
 const AWAITING_CONFIRMATION_MS = 20 * 60 * 1000;
 
+const HISTORY_BACKFILL_WORKER_COUNT = 3;
+const HISTORY_LOOKBACK_DAYS = 30;
+const HISTORY_PROGRESS_FLUSH_INTERVAL_MS = 400;
+const HISTORY_PROGRESS_FLUSH_SOURCE_INTERVAL = 8;
+
 interface ImportPromptOptions {
   foregroundOnly?: boolean;
   todayBucket?: string;
@@ -35,6 +40,20 @@ interface ParserSyncResult {
 
 function logSessionKey(source: LogPrompt['source'], sessionId: string): string {
   return `${source}:${sessionId}`;
+}
+
+function getTodayBucket(now = new Date()): string {
+  return now.toISOString().slice(0, 10);
+}
+
+function getHistoryLookbackStartBucket(now = new Date()): string {
+  const lookbackStart = new Date(now);
+  lookbackStart.setUTCDate(lookbackStart.getUTCDate() - HISTORY_LOOKBACK_DAYS);
+  return lookbackStart.toISOString().slice(0, 10);
+}
+
+function shouldIncludeHistoryBackfillEntry(entry: LogSessionScanEntry, todayBucket: string, lookbackStartBucket: string): boolean {
+  return entry.dateBucket !== todayBucket && entry.dateBucket >= lookbackStartBucket;
 }
 
 export class LogSyncService {
@@ -58,8 +77,8 @@ export class LogSyncService {
     this.parser = new LogParser();
   }
 
-  private static resolveHistoryWorkerCount(cpuParallelism = availableParallelism()): number {
-    return Math.max(1, Math.min(8, Math.floor(cpuParallelism * 0.75)));
+  private static resolveHistoryWorkerCount(_cpuParallelism = availableParallelism()): number {
+    return HISTORY_BACKFILL_WORKER_COUNT;
   }
 
   start(): void {
@@ -123,15 +142,16 @@ export class LogSyncService {
       return;
     }
 
-    const todayBucket = new Date().toISOString().slice(0, 10);
+    const todayBucket = getTodayBucket();
+    const lookbackStartBucket = getHistoryLookbackStartBucket();
     const entryMap = new Map<string, LogSessionScanEntry>(
       this.parser
         .discoverScanEntries()
-        .filter((entry) => entry.dateBucket !== todayBucket)
+        .filter((entry) => shouldIncludeHistoryBackfillEntry(entry, todayBucket, lookbackStartBucket))
         .map((entry) => [`${entry.source}:${entry.path}`, entry] as const)
     );
     const runningSessions = this.parser.getRunningSessionsSnapshot();
-    const pendingEntries = [...state.historyImport.pendingEntries];
+    const pendingEntries = [...state.historyImport.pendingEntries].filter((entry) => entry.dateBucket >= lookbackStartBucket);
     const pendingEntryMap = new Map(pendingEntries.map((entry) => [entry.id, entry] as const));
     const completedEntries = [...state.historyImport.completedEntries];
     const completedEntrySet = new Set(completedEntries);
@@ -139,7 +159,44 @@ export class LogSyncService {
     let processedPrompts = state.historyImport.processedPrompts;
     let nextIndex = 0;
     let mutationQueue = Promise.resolve();
+    let progressDirty = false;
+    let processedSinceFlush = 0;
+    let lastProgressFlushAt = 0;
     const historyParsePool = this.createHistoryParsePool(Math.min(this.historyWorkerCount, pendingEntries.length));
+
+    const flushProgress = async (force = false) => {
+      if (!force && !progressDirty) {
+        return;
+      }
+
+      const now = Date.now();
+      if (!force) {
+        const elapsedSinceLastFlush = now - lastProgressFlushAt;
+        if (
+          processedSinceFlush < HISTORY_PROGRESS_FLUSH_SOURCE_INTERVAL &&
+          elapsedSinceLastFlush < HISTORY_PROGRESS_FLUSH_INTERVAL_MS
+        ) {
+          return;
+        }
+      }
+
+      await this.repository.setHistoryImport({
+        scope: 'history-backfill',
+        status: 'running',
+        foregroundReady: true,
+        processedPrompts,
+        totalPrompts: undefined,
+        processedSources: completedEntries.length,
+        totalSources: completedEntries.length + pendingEntryMap.size,
+        pendingEntries: [...pendingEntryMap.values()],
+        completedEntries,
+        completedEntryMtims
+      });
+      await PrompterPanel.syncHistoryImport(this.repository);
+      progressDirty = false;
+      processedSinceFlush = 0;
+      lastProgressFlushAt = now;
+    };
 
     const scheduleMutation = async (fn: () => Promise<void>) => {
       mutationQueue = mutationQueue.then(fn);
@@ -165,6 +222,8 @@ export class LogSyncService {
       if (typeof lastModifiedMs === 'number') {
         completedEntryMtims[entryId] = lastModifiedMs;
       }
+      progressDirty = true;
+      processedSinceFlush += 1;
     };
 
     this.pauseHistoryRequested = false;
@@ -176,6 +235,7 @@ export class LogSyncService {
       lastError: undefined
     });
     await PrompterPanel.syncHistoryImport(this.repository);
+    lastProgressFlushAt = Date.now();
 
     try {
       const workers = Array.from({ length: Math.min(this.historyWorkerCount, pendingEntries.length) }, async () => {
@@ -189,18 +249,7 @@ export class LogSyncService {
           if (!entry) {
             await scheduleMutation(async () => {
               markCompleted(checkpoint.id);
-              await this.repository.setHistoryImport({
-                scope: 'history-backfill',
-                status: 'running',
-                processedSources: completedEntries.length,
-                totalSources: completedEntries.length + pendingEntryMap.size,
-                processedPrompts,
-                totalPrompts: undefined,
-                pendingEntries: [...pendingEntryMap.values()],
-                completedEntries,
-                completedEntryMtims
-              });
-              await PrompterPanel.syncHistoryImport(this.repository);
+              await flushProgress();
             });
             continue;
           }
@@ -216,23 +265,12 @@ export class LogSyncService {
             await scheduleMutation(async () => {
               processedPrompts += promptCount;
               markCompleted(checkpoint.id, entry.lastModifiedMs);
-              await this.repository.setHistoryImport({
-                scope: 'history-backfill',
-                status: 'running',
-                foregroundReady: true,
-                processedPrompts,
-                totalPrompts: undefined,
-                processedSources: completedEntries.length,
-                totalSources: completedEntries.length + pendingEntryMap.size,
-                pendingEntries: [...pendingEntryMap.values()],
-                completedEntries,
-                completedEntryMtims
-              });
-              await PrompterPanel.syncHistoryImport(this.repository);
+              await flushProgress();
             });
           } catch (error) {
             this.pauseHistoryRequested = true;
             await scheduleMutation(async () => {
+              await flushProgress(true);
               await this.repository.setHistoryImport({
                 scope: 'history-backfill',
                 status: 'paused',
@@ -251,6 +289,7 @@ export class LogSyncService {
 
       await Promise.all(workers);
       await mutationQueue;
+      await flushProgress(true);
     } finally {
       await historyParsePool?.dispose();
       this.historyBackfillInFlight = false;
@@ -388,7 +427,7 @@ export class LogSyncService {
   }
 
   private async bootstrapTodayImport(): Promise<void> {
-    const todayBucket = new Date().toISOString().slice(0, 10);
+    const todayBucket = getTodayBucket();
     const entries = this.parser.discoverScanEntries().filter((entry) => entry.dateBucket === todayBucket);
     const runningSessions = this.parser.getRunningSessionsSnapshot();
     let processedPrompts = 0;
@@ -448,13 +487,18 @@ export class LogSyncService {
 
   private async prepareHistoryBackfill(): Promise<void> {
     const state = await this.repository.getState();
-    const todayBucket = new Date().toISOString().slice(0, 10);
-    const entries = this.parser.discoverScanEntries().filter((entry) => entry.dateBucket !== todayBucket);
+    const todayBucket = getTodayBucket();
+    const lookbackStartBucket = getHistoryLookbackStartBucket();
+    const entries = this.parser
+      .discoverScanEntries()
+      .filter((entry) => shouldIncludeHistoryBackfillEntry(entry, todayBucket, lookbackStartBucket));
     const currentEntriesById = new Map<string, LogSessionScanEntry>(
       entries.map((entry) => [`${entry.source}:${entry.path}`, entry] as const)
     );
     const pendingEntriesById = new Map(
-      (state.historyImport.pendingEntries ?? []).map((entry) => [entry.id, entry] as const)
+      (state.historyImport.pendingEntries ?? [])
+        .filter((entry) => entry.dateBucket >= lookbackStartBucket)
+        .map((entry) => [entry.id, entry] as const)
     );
     const completedEntries = [...(state.historyImport.completedEntries ?? [])].filter((entryId) => {
       const entry = currentEntriesById.get(entryId);
