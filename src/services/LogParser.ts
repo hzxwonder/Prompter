@@ -80,6 +80,15 @@ function sanitizePrompt(text: string): string {
   return sanitizeImportedPromptContent(text);
 }
 
+function isClaudeApiErrorCompletionEvent(event: unknown): event is { type: string; subtype: string; level: string; timestamp?: string } {
+  if (!event || typeof event !== 'object') {
+    return false;
+  }
+
+  const candidate = event as { type?: string; subtype?: string; level?: string };
+  return candidate.level === 'error';
+}
+
 export function isClaudeExternalUserPromptEvent(event: unknown): event is ClaudeUserEvent {
   if (!event || typeof event !== 'object') {
     return false;
@@ -513,6 +522,14 @@ export class LogParser {
           // stop_reason lives inside event.message (not at top level)
           const stopReason = event.message?.stop_reason ?? event.stop_reason;
           if (stopReason === 'end_turn' && prompts.length > 0) {
+            const lastPrompt = prompts[prompts.length - 1];
+            if (!lastPrompt.completedAt) {
+              lastPrompt.completedAt = event.timestamp ?? new Date().toISOString();
+            }
+            continue;
+          }
+
+          if (isClaudeApiErrorCompletionEvent(event) && prompts.length > 0) {
             const lastPrompt = prompts[prompts.length - 1];
             if (!lastPrompt.completedAt) {
               lastPrompt.completedAt = event.timestamp ?? new Date().toISOString();

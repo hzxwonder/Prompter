@@ -126,8 +126,17 @@ export interface PrompterState {
   settings: PrompterSettings;
 }
 
+function padDatePart(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
 export function toDateBucket(isoString: string): string {
-  return isoString.slice(0, 10);
+  const parsed = new Date(isoString);
+  if (Number.isNaN(parsed.getTime())) {
+    return isoString.slice(0, 10);
+  }
+
+  return `${parsed.getFullYear()}-${padDatePart(parsed.getMonth() + 1)}-${padDatePart(parsed.getDate())}`;
 }
 
 export function createInitialState(nowIso: string, _platform?: string): PrompterState {

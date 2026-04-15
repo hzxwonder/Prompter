@@ -209,15 +209,6 @@ Main files include:
 - `session-groups.json`
 - `modular-prompts.json`
 
-## Local Development
-
-```bash
-npm install
-npm run build
-npm test
-npm run lint
-```
-
 ## Links
 
 - GitHub: <https://github.com/hzxwonder/Prompter>

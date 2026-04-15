@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('vscode', () => ({
@@ -13,6 +16,7 @@ import {
   extractClaudeUserText,
   isClaudeExternalUserPromptEvent,
   resolvePromptStatuses,
+  LogParser,
   shouldDiscardImportedPromptContent
 } from '../../../src/services/LogParser';
 
@@ -62,6 +66,53 @@ describe('LogParser Claude event filtering', () => {
 
     expect(shouldDiscardImportedPromptContent(content)).toBe(true);
     expect(shouldDiscardImportedPromptContent('Investigate the failing workspace sync logic')).toBe(false);
+  });
+
+  it('marks the latest Claude prompt as completed when an api_error is logged', () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'prompter-claude-log-'));
+    const projectDir = path.join(tempDir, 'project-a');
+    const logPath = path.join(projectDir, 'session-1.jsonl');
+
+    try {
+      mkdirSync(projectDir, { recursive: true });
+      writeFileSync(
+        logPath,
+        [
+          JSON.stringify({
+            type: 'user',
+            userType: 'external',
+            timestamp: '2026-04-14T15:20:00.000Z',
+            message: {
+              role: 'user',
+              content: [{ type: 'text', text: 'Retry the failing sync.' }]
+            }
+          }),
+          JSON.stringify({
+            parentUuid: 'e213b875-df36-4294-b33a-45f498e4ae55',
+            isSidechain: false,
+            type: 'system',
+            subtype: 'api_error',
+            level: 'error',
+            timestamp: '2026-04-14T15:20:42.367Z'
+          })
+        ].join('\n'),
+        'utf8'
+      );
+
+      const parser = new LogParser();
+      const prompts = (parser as any).extractClaudePrompts(logPath);
+
+      expect(prompts).toEqual([
+        expect.objectContaining({
+          source: 'claude-code',
+          sessionId: 'session-1',
+          userInput: 'Retry the failing sync.',
+          completedAt: '2026-04-14T15:20:42.367Z'
+        })
+      ]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });
 

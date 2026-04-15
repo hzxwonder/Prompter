@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
-import type { PromptCard, PromptStatus, PrompterSettings } from '../../../src/shared/models';
+import { toDateBucket, type PromptCard, type PromptStatus, type PrompterSettings } from '../../../src/shared/models';
 import { postMessage } from '../api/vscode';
 import { Composer } from '../components/Composer';
 import { getLocaleText } from '../i18n';
@@ -62,7 +62,7 @@ function buildDraftPayload(draft: WorkspaceDraft) {
 }
 
 function getTodayDateBucket(): string {
-  return new Date().toISOString().slice(0, 10);
+  return toDateBucket(new Date().toISOString());
 }
 
 function looksLikeDroppedPath(value: string): boolean {

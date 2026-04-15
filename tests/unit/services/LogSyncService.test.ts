@@ -81,7 +81,7 @@ describe('LogSyncService', () => {
     expect(showInformationMessage).toHaveBeenCalledWith('Prompt completed: Release wrap-up...', 'View');
   });
 
-  it('auto-completes an awaiting-confirmation prompt when a new prompt arrives in the same codex session', async () => {
+  it('auto-completes the previous active prompt when a new prompt arrives in the same codex session', async () => {
     const state = createInitialState('2026-04-08T10:30:00.000Z');
     state.cards = [
       {
@@ -97,7 +97,7 @@ describe('LogSyncService', () => {
         sourceRef: 'session-1:turn-1',
         createdAt: '2026-04-08T09:50:00.000Z',
         updatedAt: '2026-04-08T09:50:00.000Z',
-        lastActiveAt: '2026-04-08T09:50:00.000Z',
+        lastActiveAt: '2026-04-08T10:25:00.000Z',
         dateBucket: '2026-04-08',
         fileRefs: [],
         justCompleted: false
@@ -125,11 +125,15 @@ describe('LogSyncService', () => {
       status: 'running'
     });
 
-    expect(repository.markCardCompletedFromLog).toHaveBeenCalledWith('card-1', '2026-04-08T10:30:00.000Z');
+    expect(repository.markCardCompletedFromLog).toHaveBeenCalledWith(
+      'card-1',
+      '2026-04-08T10:30:00.000Z',
+      { justCompleted: false }
+    );
     expect(repository.saveImportedCard).toHaveBeenCalled();
   });
 
-  it('does not auto-complete a same-session prompt that is still active and not awaiting confirmation', async () => {
+  it('auto-completes a same-session Claude prompt without requiring awaiting-confirmation state', async () => {
     const state = createInitialState('2026-04-08T10:10:00.000Z');
     state.cards = [
       {
@@ -145,7 +149,7 @@ describe('LogSyncService', () => {
         sourceRef: 'session-1',
         createdAt: '2026-04-08T10:00:00.000Z',
         updatedAt: '2026-04-08T10:00:00.000Z',
-        lastActiveAt: '2026-04-08T10:00:00.000Z',
+        lastActiveAt: '2026-04-08T10:09:00.000Z',
         dateBucket: '2026-04-08',
         fileRefs: [],
         justCompleted: false
@@ -173,7 +177,11 @@ describe('LogSyncService', () => {
       status: 'running'
     });
 
-    expect(repository.markCardCompletedFromLog).not.toHaveBeenCalled();
+    expect(repository.markCardCompletedFromLog).toHaveBeenCalledWith(
+      'card-1',
+      '2026-04-08T10:10:00.000Z',
+      { justCompleted: false }
+    );
     expect(repository.saveImportedCard).toHaveBeenCalled();
   });
 

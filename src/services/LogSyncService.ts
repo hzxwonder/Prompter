@@ -346,7 +346,7 @@ export class LogSyncService {
     log(`[LogSyncService] 发现新 prompt: ${prompt.sessionId}`);
 
     const state = await this.repository.getState();
-    await this.completeAwaitingSameSessionPrompts(state, prompt);
+    await this.completePreviousSameSessionPrompts(state, prompt);
 
     // 创建卡片（传递原始日志时间戳，保证泳道排序准确）
     const card = await this.repository.saveImportedCard({
@@ -417,11 +417,12 @@ export class LogSyncService {
     }
   }
 
-  private async completeAwaitingSameSessionPrompts(
+  private async completePreviousSameSessionPrompts(
     state: Awaited<ReturnType<PromptRepository['getState']>>,
     prompt: LogPrompt
   ): Promise<void> {
     const completedAt = normalizeCompletionTimestamp(prompt.createdAt);
+    const promptCreatedAtMs = Date.parse(completedAt);
 
     for (const card of state.cards) {
       if (
@@ -446,11 +447,12 @@ export class LogSyncService {
         continue;
       }
 
-      if (!isAwaitingConfirmation(card, completedAt)) {
+      const cardCreatedAtMs = Date.parse(card.createdAt);
+      if (!Number.isNaN(promptCreatedAtMs) && !Number.isNaN(cardCreatedAtMs) && cardCreatedAtMs >= promptCreatedAtMs) {
         continue;
       }
 
-      await this.repository.markCardCompletedFromLog(card.id, completedAt);
+      await this.repository.markCardCompletedFromLog(card.id, completedAt, { justCompleted: false });
     }
   }
 }
@@ -473,18 +475,4 @@ function resolveSessionId(
 function normalizeCompletionTimestamp(timestamp: string): string {
   const parsed = new Date(timestamp);
   return Number.isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString();
-}
-
-function isAwaitingConfirmation(
-  card: Awaited<ReturnType<PromptRepository['getState']>>['cards'][number],
-  completedAt: string
-): boolean {
-  const baselineMs = Date.parse(card.lastActiveAt ?? card.createdAt);
-  const completedAtMs = Date.parse(completedAt);
-
-  if (Number.isNaN(baselineMs) || Number.isNaN(completedAtMs)) {
-    return false;
-  }
-
-  return completedAtMs - baselineMs >= AWAITING_CONFIRMATION_MS;
 }

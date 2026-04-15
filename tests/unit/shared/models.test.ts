@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { createInitialState } from '../../../src/shared/models';
+import { createInitialState, toDateBucket } from '../../../src/shared/models';
 
 describe('createInitialState', () => {
   it('starts on workspace with scaffold defaults', () => {
@@ -107,5 +107,17 @@ describe('createInitialState', () => {
         })
       ])
     );
+  });
+
+  it('uses the local calendar day instead of the UTC date when building date buckets', () => {
+    const timestamp = '2026-04-15T16:10:00.000Z';
+    const local = new Date(timestamp);
+    const expected = [
+      local.getFullYear(),
+      String(local.getMonth() + 1).padStart(2, '0'),
+      String(local.getDate()).padStart(2, '0')
+    ].join('-');
+
+    expect(toDateBucket(timestamp)).toBe(expected);
   });
 });
