@@ -1,5 +1,5 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import * as fs from 'node:fs';
+import { tmpdir, homedir } from 'node:os';
 import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -112,6 +112,85 @@ describe('LogParser Claude event filtering', () => {
       ]);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('LogParser lightweight today/running discovery', () => {
+  it('returns only today entries plus recently running sessions for workspace loading', () => {
+    const parser = new LogParser();
+
+    const existsSyncSpy = vi.spyOn(fs, 'existsSync');
+    const readdirSyncSpy = vi.spyOn(fs, 'readdirSync');
+    const statSyncSpy = vi.spyOn(fs, 'statSync');
+
+    const claudeRoot = path.join(homedir(), '.claude', 'projects');
+    const codexRoot = path.join(homedir(), '.codex', 'sessions');
+    const todayDir = path.join(codexRoot, '2026', '04', '08');
+    const oldDir = path.join(codexRoot, '2026', '03', '01');
+    const runningDir = path.join(codexRoot, '2026', '04', '07');
+    const nowMs = Date.parse('2026-04-08T12:00:00.000Z');
+    const originalDateNow = Date.now;
+    Date.now = () => nowMs;
+
+    const directories = new Set([claudeRoot, path.join(claudeRoot, 'project-a'), codexRoot, path.join(codexRoot, '2026'), path.join(codexRoot, '2026', '04'), path.join(codexRoot, '2026', '03'), todayDir, oldDir, runningDir]);
+    const stats = new Map<string, { isDirectory: boolean; mtimeMs: number }>([
+      [path.join(claudeRoot, 'project-a'), { isDirectory: true, mtimeMs: Date.parse('2026-04-08T09:00:00.000Z') }],
+      [path.join(claudeRoot, 'project-a', 'today.jsonl'), { isDirectory: false, mtimeMs: Date.parse('2026-04-08T09:30:00.000Z') }],
+      [path.join(claudeRoot, 'project-a', 'old.jsonl'), { isDirectory: false, mtimeMs: Date.parse('2026-03-01T09:30:00.000Z') }],
+      [path.join(codexRoot, '2026'), { isDirectory: true, mtimeMs: nowMs }],
+      [path.join(codexRoot, '2026', '04'), { isDirectory: true, mtimeMs: nowMs }],
+      [path.join(codexRoot, '2026', '03'), { isDirectory: true, mtimeMs: nowMs }],
+      [todayDir, { isDirectory: true, mtimeMs: Date.parse('2026-04-08T11:00:00.000Z') }],
+      [path.join(todayDir, 'today-codex.jsonl'), { isDirectory: false, mtimeMs: Date.parse('2026-04-08T11:30:00.000Z') }],
+      [oldDir, { isDirectory: true, mtimeMs: Date.parse('2026-03-01T11:00:00.000Z') }],
+      [path.join(oldDir, 'old-codex.jsonl'), { isDirectory: false, mtimeMs: Date.parse('2026-03-01T11:30:00.000Z') }],
+      [runningDir, { isDirectory: true, mtimeMs: Date.parse('2026-04-08T11:40:00.000Z') }],
+      [path.join(runningDir, 'running-codex.jsonl'), { isDirectory: false, mtimeMs: Date.parse('2026-04-08T11:50:00.000Z') }]
+    ]);
+
+    existsSyncSpy.mockImplementation((targetPath: any) => {
+      const normalized = String(targetPath);
+      return directories.has(normalized) || stats.has(normalized);
+    });
+    readdirSyncSpy.mockImplementation((targetPath: any) => {
+      const normalized = String(targetPath);
+      if (normalized === claudeRoot) return ['project-a'] as any;
+      if (normalized === path.join(claudeRoot, 'project-a')) return ['today.jsonl', 'old.jsonl'] as any;
+      if (normalized === codexRoot) return ['2026'] as any;
+      if (normalized === path.join(codexRoot, '2026')) return ['04', '03'] as any;
+      if (normalized === path.join(codexRoot, '2026', '04')) return ['08', '07'] as any;
+      if (normalized === path.join(codexRoot, '2026', '03')) return ['01'] as any;
+      if (normalized === todayDir) return ['today-codex.jsonl'] as any;
+      if (normalized === oldDir) return ['old-codex.jsonl'] as any;
+      if (normalized === runningDir) return ['running-codex.jsonl'] as any;
+      return [] as any;
+    });
+    statSyncSpy.mockImplementation((targetPath: any) => {
+      const normalized = String(targetPath);
+      const stat = stats.get(normalized);
+      if (!stat) {
+        throw new Error(`Missing stat for ${normalized}`);
+      }
+      return {
+        isDirectory: () => stat.isDirectory,
+        mtimeMs: stat.mtimeMs
+      } as any;
+    });
+
+    try {
+      const entries = parser.discoverTodayOrRunningEntries('2026-04-08', new Set(['codex:running-codex']));
+
+      expect(entries.map((entry) => entry.path)).toEqual([
+        path.join(runningDir, 'running-codex.jsonl'),
+        path.join(todayDir, 'today-codex.jsonl'),
+        path.join(claudeRoot, 'project-a', 'today.jsonl')
+      ]);
+    } finally {
+      Date.now = originalDateNow;
+      existsSyncSpy.mockRestore();
+      readdirSyncSpy.mockRestore();
+      statSyncSpy.mockRestore();
     }
   });
 });

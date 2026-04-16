@@ -502,6 +502,14 @@ export function resolvePromptStatuses(
   return { inserted, nextState, justCompletedSourceRefs, silentlyCompletedSourceRefs };
 }
 
+function toDateBucketFromMs(timestampMs: number): string {
+  return new Date(timestampMs).toISOString().slice(0, 10);
+}
+
+function isSessionMarkedRunning(runningSessions: Set<string>, source: LogPrompt['source'], sessionId: string): boolean {
+  return runningSessions.has(sessionKey(source, sessionId));
+}
+
 export class LogParser {
   private state: LogParserState;
   private sessionLastModified = new Map<string, number>();
@@ -858,6 +866,142 @@ export class LogParser {
         }
       } catch (error) {
         logError('发现 Roo 会话失败', error);
+      }
+    }
+
+    return entries.sort((left, right) => right.lastModifiedMs - left.lastModifiedMs);
+  }
+
+  discoverTodayOrRunningEntries(todayBucket: string, runningSessions: Set<string>): LogSessionScanEntry[] {
+    const entries: LogSessionScanEntry[] = [];
+    const seen = new Set<string>();
+
+    const pushEntry = (entry: LogSessionScanEntry): void => {
+      const entryKey = `${entry.source}:${entry.path}`;
+      if (seen.has(entryKey)) {
+        return;
+      }
+      seen.add(entryKey);
+      entries.push(entry);
+    };
+
+    if (fs.existsSync(CLAUDE_PROJECTS_DIR)) {
+      try {
+        const projects = fs.readdirSync(CLAUDE_PROJECTS_DIR);
+        for (const project of projects) {
+          const projectDir = path.join(CLAUDE_PROJECTS_DIR, project);
+          if (!fs.statSync(projectDir).isDirectory()) continue;
+
+          for (const file of fs.readdirSync(projectDir)) {
+            if (!file.endsWith('.jsonl')) continue;
+            const filePath = path.join(projectDir, file);
+            const stat = fs.statSync(filePath);
+            const sessionId = path.basename(file, '.jsonl');
+            const dateBucket = toDateBucketFromMs(stat.mtimeMs);
+            if (dateBucket !== todayBucket && !isSessionMarkedRunning(runningSessions, 'claude-code', sessionId)) {
+              continue;
+            }
+            pushEntry({
+              source: 'claude-code',
+              sessionId,
+              path: filePath,
+              dateBucket,
+              lastModifiedMs: stat.mtimeMs
+            });
+          }
+        }
+      } catch (error) {
+        logError('发现 Claude 今日/运行中会话失败', error);
+      }
+    }
+
+    if (fs.existsSync(CODEX_SESSIONS_DIR)) {
+      const [year, month, day] = todayBucket.split('-');
+      const todayDir = path.join(CODEX_SESSIONS_DIR, year, month, day);
+      if (fs.existsSync(todayDir)) {
+        const scanTodayDir = (dir: string): void => {
+          try {
+            for (const entry of fs.readdirSync(dir)) {
+              const fullPath = path.join(dir, entry);
+              const stat = fs.statSync(fullPath);
+              if (stat.isDirectory()) {
+                scanTodayDir(fullPath);
+                continue;
+              }
+              if (!entry.endsWith('.jsonl')) continue;
+              pushEntry({
+                source: 'codex',
+                sessionId: path.basename(entry, '.jsonl'),
+                path: fullPath,
+                dateBucket: todayBucket,
+                lastModifiedMs: stat.mtimeMs
+              });
+            }
+          } catch (error) {
+            logError(`发现 Codex 今日会话失败 ${dir}`, error);
+          }
+        };
+        scanTodayDir(todayDir);
+      }
+
+      const recentCutoffMs = Date.now() - 60 * 60 * 1000;
+      const scanRecentRunningDirs = (dir: string): void => {
+        try {
+          for (const entry of fs.readdirSync(dir)) {
+            const fullPath = path.join(dir, entry);
+            const stat = fs.statSync(fullPath);
+            if (stat.isDirectory()) {
+              if (stat.mtimeMs < recentCutoffMs) {
+                continue;
+              }
+              scanRecentRunningDirs(fullPath);
+              continue;
+            }
+            if (!entry.endsWith('.jsonl')) continue;
+            const sessionId = path.basename(entry, '.jsonl');
+            if (!isSessionMarkedRunning(runningSessions, 'codex', sessionId)) {
+              continue;
+            }
+            const parts = fullPath.split(path.sep);
+            const dateBucket =
+              parts.length >= 4
+                ? `${parts[parts.length - 4]}-${parts[parts.length - 3]}-${parts[parts.length - 2]}`
+                : toDateBucketFromMs(stat.mtimeMs);
+            pushEntry({
+              source: 'codex',
+              sessionId,
+              path: fullPath,
+              dateBucket,
+              lastModifiedMs: stat.mtimeMs
+            });
+          }
+        } catch (error) {
+          logError(`发现 Codex 运行中会话失败 ${dir}`, error);
+        }
+      };
+      scanRecentRunningDirs(CODEX_SESSIONS_DIR);
+    }
+
+    if (fs.existsSync(ROO_TASKS_DIR)) {
+      try {
+        for (const entry of fs.readdirSync(ROO_TASKS_DIR)) {
+          const taskDir = path.join(ROO_TASKS_DIR, entry);
+          const stat = fs.statSync(taskDir);
+          if (!stat.isDirectory()) continue;
+          const dateBucket = toDateBucketFromMs(stat.mtimeMs);
+          if (dateBucket !== todayBucket && !isSessionMarkedRunning(runningSessions, 'roo-code', entry)) {
+            continue;
+          }
+          pushEntry({
+            source: 'roo-code',
+            sessionId: entry,
+            path: taskDir,
+            dateBucket,
+            lastModifiedMs: stat.mtimeMs
+          });
+        }
+      } catch (error) {
+        logError('发现 Roo 今日/运行中会话失败', error);
       }
     }
 

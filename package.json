@@ -2,7 +2,7 @@
   "name": "prompter",
   "displayName": "Prompter",
   "description": "A prompt workspace for VS Code to collect context, reuse prompt blocks, and track AI prompt sessions.",
-  "version": "1.2.1",
+  "version": "1.2.3",
   "license": "MIT",
   "icon": "icon.png",
   "engines": {
@@ -146,7 +146,7 @@
     "@types/vscode": "^1.98.0",
     "esbuild": "^0.25.0",
     "jsdom": "^26.0.0",
-    "typescript": "^5.8.2",
+    "typescript": "^5.9.3",
     "vitest": "^3.0.8"
   }
 }

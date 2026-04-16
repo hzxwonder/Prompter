@@ -31,7 +31,10 @@ vi.mock('../../../src/services/LogParser', () => ({
       close: vi.fn(),
       sync: vi.fn(() => ({ inserted: [], justCompletedSourceRefs: [] })),
       getAllPrompts: vi.fn(() => []),
-      getSessionLastModifiedMs: vi.fn(() => undefined)
+      getSessionLastModifiedMs: vi.fn(() => undefined),
+      discoverTodayOrRunningEntries: vi.fn(() => []),
+      discoverScanEntries: vi.fn(() => []),
+      applySessionScan: vi.fn((prompts) => ({ inserted: prompts, justCompletedSourceRefs: [], silentlyCompletedSourceRefs: [] }))
     };
   })
 }));
@@ -247,6 +250,137 @@ describe('LogSyncService', () => {
     );
   });
 
+  it('bootstraps today import via lightweight today/running discovery', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    const todayBucket = new Date().toISOString().slice(0, 10);
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      setHistoryImport: vi.fn().mockResolvedValue(undefined),
+      saveImportedCards: vi.fn().mockResolvedValue([])
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const parser = (service as any).parser;
+    parser.getRunningSessionsSnapshot = vi.fn(() => new Set<string>());
+    parser.discoverTodayOrRunningEntries = vi.fn(() => [
+      {
+        source: 'codex',
+        sessionId: 'today-session',
+        path: '/tmp/today.jsonl',
+        dateBucket: todayBucket,
+        lastModifiedMs: Date.parse('2026-04-08T10:00:00.000Z')
+      }
+    ]);
+    parser.scanEntry = vi.fn(() => [
+      {
+        source: 'codex',
+        sessionId: 'today-session',
+        sourceRef: 'today-session:turn-1',
+        project: 'today-session',
+        userInput: 'Keep workspace responsive.',
+        createdAt: `${todayBucket}T10:00:00.000Z`,
+        status: 'running'
+      }
+    ]);
+    parser.applySessionScan = vi.fn((prompts) => ({ inserted: prompts }));
+
+    await (service as any).bootstrapTodayImport();
+
+    expect(parser.discoverTodayOrRunningEntries).toHaveBeenCalledWith(todayBucket, expect.any(Set));
+    expect(repository.saveImportedCards).toHaveBeenCalledTimes(1);
+  });
+
+  it('settles older same-session prompts even when they are imported together in one batch', async () => {
+    const state = createInitialState('2026-04-08T10:30:00.000Z');
+    const repositoryState = { ...state, cards: [] as typeof state.cards };
+
+    const repository = {
+      getState: vi.fn().mockImplementation(async () => repositoryState),
+      saveImportedCards: vi.fn().mockImplementation(async (inputs: any[]) => {
+        repositoryState.cards = inputs.map((input, index) => ({
+          id: `card-${index + 1}`,
+          title: input.title,
+          content: input.content,
+          status: input.status,
+          runtimeState: input.runtimeState,
+          groupId: 'codex:session-1',
+          groupName: 'session-1',
+          groupColor: '#22c55e',
+          sourceType: input.sourceType,
+          sourceRef: input.sourceRef,
+          createdAt: input.createdAt,
+          updatedAt: input.createdAt,
+          dateBucket: '2026-04-08',
+          fileRefs: [],
+          justCompleted: false
+        }));
+      }),
+      acknowledgeCompletion: vi.fn().mockImplementation(async (cardId: string) => {
+        repositoryState.cards = repositoryState.cards.map((card) =>
+          card.id === cardId ? { ...card, justCompleted: false } : card
+        );
+      }),
+      markCardCompletedFromLog: vi.fn().mockImplementation(async (sourceRef: string, completedAt: string, options?: { justCompleted?: boolean }) => {
+        repositoryState.cards = repositoryState.cards.map((card) =>
+          card.sourceRef === sourceRef || card.id === sourceRef
+            ? {
+                ...card,
+                status: 'completed',
+                runtimeState: 'finished',
+                completedAt,
+                updatedAt: completedAt,
+                justCompleted: options?.justCompleted ?? true
+              }
+            : card
+        );
+      })
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+
+    await (service as any).importEntry(
+      {
+        source: 'codex',
+        sessionId: 'session-1',
+        path: '/tmp/session-1.jsonl',
+        dateBucket: '2026-04-08',
+        lastModifiedMs: Date.parse('2026-04-08T10:30:00.000Z')
+      },
+      new Set<string>(['codex:session-1']),
+      { foregroundOnly: true, todayBucket: '2026-04-08', skipRefresh: true, skipNotify: true },
+      async () => [
+        {
+          source: 'codex',
+          sessionId: 'session-1',
+          sourceRef: 'session-1:turn-1',
+          project: 'session-1',
+          userInput: 'Inspect the activation failure.',
+          createdAt: '2026-04-08T10:00:00.000Z',
+          completedAt: '2026-04-08T10:05:00.000Z',
+          status: 'completed'
+        },
+        {
+          source: 'codex',
+          sessionId: 'session-1',
+          sourceRef: 'session-1:turn-2',
+          project: 'session-1',
+          userInput: 'Open the prompt workspace directly from the activity bar.',
+          createdAt: '2026-04-08T10:30:00.000Z',
+          status: 'running'
+        }
+      ]
+    );
+
+    expect(repository.saveImportedCards).toHaveBeenCalledTimes(1);
+    expect(repository.acknowledgeCompletion).toHaveBeenCalledWith('card-1');
+    expect(repository.markCardCompletedFromLog).toHaveBeenCalledTimes(1);
+    expect(repository.markCardCompletedFromLog).toHaveBeenCalledWith(
+      'session-1:turn-1',
+      '2026-04-08T10:05:00.000Z',
+      { justCompleted: true }
+    );
+  });
+
   it('prepares historical backfill without executing it during activation', async () => {
     const state = createInitialState('2026-04-08T10:00:00.000Z');
     const todayBucket = new Date().toISOString().slice(0, 10);
@@ -261,6 +395,16 @@ describe('LogSyncService', () => {
     (service as any).historyWorkerCount = 3;
     const parser = (service as any).parser;
     parser.hasPersistedPrompts = vi.fn(() => false);
+    parser.discoverTodayOrRunningEntries = vi.fn(() => [
+      {
+        source: 'codex',
+        sessionId: 'today-session',
+        path: '/tmp/today.jsonl',
+        dateBucket: todayBucket,
+        lastModifiedMs: Date.parse('2026-04-08T10:00:00.000Z')
+      }
+    ]);
+    parser.getRunningSessionsSnapshot = vi.fn(() => new Set<string>());
     parser.discoverScanEntries = vi.fn(() => [
       {
         source: 'codex',
@@ -277,7 +421,6 @@ describe('LogSyncService', () => {
         lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
       }
     ]);
-    parser.getRunningSessionsSnapshot = vi.fn(() => new Set<string>());
     parser.scanEntry = vi.fn(() => [
       {
         source: 'codex',
@@ -345,7 +488,7 @@ describe('LogSyncService', () => {
     const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
     (service as any).historyWorkerCount = 3;
     const parser = (service as any).parser;
-    parser.discoverScanEntries = vi.fn(() => [{
+    parser.discoverTodayOrRunningEntries = vi.fn(() => [{
       source: 'codex',
       sessionId: 'old-session',
       path: '/tmp/old.jsonl',
@@ -385,6 +528,10 @@ describe('LogSyncService', () => {
     await (service as any).sync();
 
     expect(parser.sync).not.toHaveBeenCalled();
+    expect(parser.discoverTodayOrRunningEntries).toHaveBeenCalledWith(
+      todayBucket,
+      expect.any(Set)
+    );
     expect(parser.scanEntry).toHaveBeenCalledTimes(1);
     expect(parser.scanEntry).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -398,6 +545,59 @@ describe('LogSyncService', () => {
         content: 'Today prompt in old session'
       })
     );
+  });
+
+  it('avoids full parser sync during normal incremental sync and uses lightweight discovery instead', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    const todayBucket = new Date().toISOString().slice(0, 10);
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      saveImportedCard: vi.fn().mockResolvedValue({
+        id: 'card-1',
+        title: 'Imported prompt'
+      }),
+      autoCompleteExpiredActiveCards: vi.fn().mockResolvedValue([]),
+      getCardsAwaitingConfirmation: vi.fn().mockResolvedValue([]),
+      updateCardLastActiveAt: vi.fn().mockResolvedValue(undefined)
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const parser = (service as any).parser;
+    parser.sync = vi.fn(() => {
+      throw new Error('parser.sync should not be called');
+    });
+    parser.discoverTodayOrRunningEntries = vi.fn(() => [
+      {
+        source: 'codex',
+        sessionId: 'today-session',
+        path: '/tmp/today.jsonl',
+        dateBucket: todayBucket,
+        lastModifiedMs: Date.parse('2026-04-08T10:00:00.000Z')
+      }
+    ]);
+    parser.getRunningSessionsSnapshot = vi.fn(() => new Set<string>());
+    parser.scanEntry = vi.fn(() => [
+      {
+        source: 'codex',
+        sessionId: 'today-session',
+        sourceRef: 'today-session:turn-1',
+        project: 'today-session',
+        userInput: 'Keep workspace responsive.',
+        createdAt: `${todayBucket}T10:00:00.000Z`,
+        status: 'running'
+      }
+    ]);
+    parser.applySessionScan = vi.fn((prompts) => ({
+      inserted: prompts,
+      justCompletedSourceRefs: [],
+      silentlyCompletedSourceRefs: []
+    }));
+
+    await (service as any).sync();
+
+    expect(parser.sync).not.toHaveBeenCalled();
+    expect(parser.discoverTodayOrRunningEntries).toHaveBeenCalledWith(todayBucket, expect.any(Set));
+    expect(repository.saveImportedCard).toHaveBeenCalledTimes(1);
   });
 
   it('completes history backfill and clears pending entries after all files finish processing', async () => {
@@ -946,6 +1146,142 @@ describe('LogSyncService', () => {
     });
 
     expect(repository.acknowledgeCompletion).toHaveBeenCalledWith('card-1');
+    expect(repository.saveImportedCard).toHaveBeenCalled();
+  });
+
+  it('settles every older pending or running card from the same session when a new prompt arrives', async () => {
+    const state = createInitialState('2026-04-08T10:40:00.000Z');
+    state.cards = [
+      {
+        id: 'card-1',
+        title: 'Earlier completed prompt',
+        content: 'Investigate the activation failure.',
+        status: 'completed',
+        runtimeState: 'finished',
+        groupId: 'codex:session-1',
+        groupName: 'session-1',
+        groupColor: '#22c55e',
+        sourceType: 'codex',
+        sourceRef: 'session-1:turn-1',
+        createdAt: '2026-04-08T09:50:00.000Z',
+        updatedAt: '2026-04-08T10:05:00.000Z',
+        completedAt: '2026-04-08T10:05:00.000Z',
+        dateBucket: '2026-04-08',
+        fileRefs: [],
+        justCompleted: true
+      },
+      {
+        id: 'card-2',
+        title: 'Earlier active prompt',
+        content: 'Open the prompt workspace from the activity bar.',
+        status: 'active',
+        runtimeState: 'running',
+        groupId: 'codex:session-1',
+        groupName: 'session-1',
+        groupColor: '#22c55e',
+        sourceType: 'codex',
+        sourceRef: 'session-1:turn-2',
+        createdAt: '2026-04-08T10:10:00.000Z',
+        updatedAt: '2026-04-08T10:10:00.000Z',
+        lastActiveAt: '2026-04-08T10:31:00.000Z',
+        dateBucket: '2026-04-08',
+        fileRefs: [],
+        justCompleted: false
+      },
+      {
+        id: 'card-3',
+        title: 'Another earlier completed prompt',
+        content: 'Explain the current status lanes.',
+        status: 'completed',
+        runtimeState: 'finished',
+        groupId: 'codex:session-1',
+        groupName: 'session-1',
+        groupColor: '#22c55e',
+        sourceType: 'codex',
+        sourceRef: 'session-1:turn-3',
+        createdAt: '2026-04-08T10:15:00.000Z',
+        updatedAt: '2026-04-08T10:20:00.000Z',
+        completedAt: '2026-04-08T10:20:00.000Z',
+        dateBucket: '2026-04-08',
+        fileRefs: [],
+        justCompleted: true
+      },
+      {
+        id: 'card-4',
+        title: 'Another earlier active prompt',
+        content: 'Polish the imported prompt timeline.',
+        status: 'active',
+        runtimeState: 'running',
+        groupId: 'codex:session-1',
+        groupName: 'session-1',
+        groupColor: '#22c55e',
+        sourceType: 'codex',
+        sourceRef: 'session-1:turn-4',
+        createdAt: '2026-04-08T10:25:00.000Z',
+        updatedAt: '2026-04-08T10:25:00.000Z',
+        lastActiveAt: '2026-04-08T10:35:00.000Z',
+        dateBucket: '2026-04-08',
+        fileRefs: [],
+        justCompleted: false
+      },
+      {
+        id: 'card-5',
+        title: 'Different session prompt',
+        content: 'Keep me untouched.',
+        status: 'completed',
+        runtimeState: 'finished',
+        groupId: 'codex:session-2',
+        groupName: 'session-2',
+        groupColor: '#22c55e',
+        sourceType: 'codex',
+        sourceRef: 'session-2:turn-1',
+        createdAt: '2026-04-08T09:40:00.000Z',
+        updatedAt: '2026-04-08T09:50:00.000Z',
+        completedAt: '2026-04-08T09:50:00.000Z',
+        dateBucket: '2026-04-08',
+        fileRefs: [],
+        justCompleted: true
+      }
+    ];
+
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      acknowledgeCompletion: vi.fn().mockResolvedValue(undefined),
+      markCardCompletedFromLog: vi.fn().mockResolvedValue(undefined),
+      saveImportedCard: vi.fn().mockResolvedValue({
+        id: 'card-6',
+        title: 'Newest prompt'
+      })
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+
+    await (service as any).handleNewPrompt({
+      source: 'codex',
+      sessionId: 'session-1',
+      sourceRef: 'session-1:turn-5',
+      project: 'session-1',
+      userInput: 'Use the latest session understanding to continue the workflow.',
+      createdAt: '2026-04-08T10:40:00.000Z',
+      status: 'running'
+    });
+
+    expect(repository.acknowledgeCompletion).toHaveBeenCalledTimes(2);
+    expect(repository.acknowledgeCompletion).toHaveBeenNthCalledWith(1, 'card-1');
+    expect(repository.acknowledgeCompletion).toHaveBeenNthCalledWith(2, 'card-3');
+    expect(repository.markCardCompletedFromLog).toHaveBeenCalledTimes(2);
+    expect(repository.markCardCompletedFromLog).toHaveBeenNthCalledWith(
+      1,
+      'card-2',
+      '2026-04-08T10:40:00.000Z',
+      { justCompleted: false }
+    );
+    expect(repository.markCardCompletedFromLog).toHaveBeenNthCalledWith(
+      2,
+      'card-4',
+      '2026-04-08T10:40:00.000Z',
+      { justCompleted: false }
+    );
     expect(repository.saveImportedCard).toHaveBeenCalled();
   });
 

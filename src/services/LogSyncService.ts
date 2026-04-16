@@ -9,13 +9,14 @@ import type { PromptRepository } from '../state/PromptRepository';
 import { PrompterPanel } from '../panel/PrompterPanel';
 import { LogParser, type LogPrompt, type LogSessionScanEntry, type ParsedPromptRecord } from './LogParser';
 import { HistoryLogParsePool } from './HistoryLogParsePool';
+import { FileWatchPool } from './FileWatchPool';
 import { log, logError } from '../logger';
 
 const BUILTIN_TONES = new Set<string>(['soft-bell', 'chime', 'ding']);
 
 const WATCH_ROOTS = [
-  path.join(homedir(), '.claude', 'projects'),
-  path.join(homedir(), '.codex', 'sessions')
+  { path: path.join(homedir(), '.claude', 'projects'), source: 'claude-code' as const },
+  { path: path.join(homedir(), '.codex', 'sessions'), source: 'codex' as const }
 ];
 const AUTO_COMPLETE_AFTER_MS = 2 * 60 * 60 * 1000;
 const AWAITING_CONFIRMATION_MS = 20 * 60 * 1000;
@@ -38,10 +39,6 @@ interface ParserSyncResult {
   silentlyCompletedSourceRefs: string[];
 }
 
-function logSessionKey(source: LogPrompt['source'], sessionId: string): string {
-  return `${source}:${sessionId}`;
-}
-
 function getTodayBucket(now = new Date()): string {
   return now.toISOString().slice(0, 10);
 }
@@ -61,7 +58,7 @@ export class LogSyncService {
   private intervalId: NodeJS.Timeout | null = null;
   private midnightTimeoutId: NodeJS.Timeout | null = null;
   private watchDebounceId: NodeJS.Timeout | null = null;
-  private readonly watchers: fs.FSWatcher[] = [];
+  private fileWatchPool: FileWatchPool | null = null;
   private syncInFlight = false;
   private syncQueued = false;
   private initialImportInFlight = false;
@@ -86,7 +83,7 @@ export class LogSyncService {
       return;
     }
 
-    this.setupWatchers();
+    this.setupFileWatchPool();
     void this.startInitialImportIfNeeded();
 
     this.intervalId = setInterval(() => {
@@ -113,10 +110,10 @@ export class LogSyncService {
       this.watchDebounceId = null;
     }
 
-    for (const watcher of this.watchers) {
-      watcher.close();
+    if (this.fileWatchPool) {
+      this.fileWatchPool.stop();
+      this.fileWatchPool = null;
     }
-    this.watchers.length = 0;
 
     this.parser.close();
     log('[LogSyncService] 已停止');
@@ -354,6 +351,7 @@ export class LogSyncService {
     const delay = Math.max(1000, nextMidnight.getTime() - now.getTime());
 
     this.midnightTimeoutId = setTimeout(() => {
+      // Pool handles its own midnight clear internally; trigger a sync + python scan
       void this.requestSync()
         .then(() => this.runPythonScan())
         .finally(() => {
@@ -364,22 +362,21 @@ export class LogSyncService {
     log(`[LogSyncService] 已安排午夜同步，将于 ${nextMidnight.toISOString()} 执行`);
   }
 
-  private setupWatchers(): void {
-    for (const rootPath of WATCH_ROOTS) {
-      if (!fs.existsSync(rootPath)) {
-        continue;
-      }
+  private setupFileWatchPool(): void {
+    const poolPersistPath = path.join(homedir(), 'prompter', 'watch-pool.json');
+    this.fileWatchPool = new FileWatchPool(WATCH_ROOTS, poolPersistPath);
 
-      try {
-        const watcher = fs.watch(rootPath, { recursive: true }, () => {
-          this.scheduleWatchSync();
-        });
-        this.watchers.push(watcher);
-        log(`[LogSyncService] 已监听日志目录: ${rootPath}`);
-      } catch (error) {
-        logError(`[LogSyncService] 监听日志目录失败: ${rootPath}`, error);
-      }
-    }
+    this.fileWatchPool.on('fileChanged', (filePath: string, _source: string) => {
+      log(`[LogSyncService] pool: file changed — ${path.basename(filePath)}`);
+      this.scheduleWatchSync();
+    });
+
+    this.fileWatchPool.on('fileAdded', (filePath: string, _source: string) => {
+      log(`[LogSyncService] pool: file added — ${path.basename(filePath)}`);
+      this.scheduleWatchSync();
+    });
+
+    this.fileWatchPool.start();
   }
 
   private scheduleWatchSync(): void {
@@ -428,8 +425,10 @@ export class LogSyncService {
 
   private async bootstrapTodayImport(): Promise<void> {
     const todayBucket = getTodayBucket();
-    const entries = this.parser.discoverScanEntries().filter((entry) => entry.dateBucket === todayBucket);
     const runningSessions = this.parser.getRunningSessionsSnapshot();
+    const entries = this.parser
+      .discoverTodayOrRunningEntries(todayBucket, runningSessions)
+      .filter((entry) => entry.dateBucket === todayBucket);
     let processedPrompts = 0;
     let processedSources = 0;
 
@@ -568,6 +567,16 @@ export class LogSyncService {
       await this.repository.saveImportedCards(cardsToSave);
     }
 
+    const insertedInChronologicalOrder = [...inserted].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    for (const prompt of insertedInChronologicalOrder) {
+      const state = await this.repository.getState();
+      await this.completePreviousSameSessionPrompts(state, prompt);
+
+      if (prompt.status === 'completed' && prompt.completedAt && prompt.sourceRef) {
+        await this.repository.markCardCompletedFromLog(prompt.sourceRef, prompt.completedAt, { justCompleted: true });
+      }
+    }
+
     return prompts.length;
   }
 
@@ -653,19 +662,18 @@ export class LogSyncService {
   private async sync(): Promise<void> {
     try {
       const state = await this.repository.getState();
+      const restrictForegroundHandling = this.shouldRestrictIncrementalSync(state);
       const {
         inserted: newPrompts,
         justCompletedSourceRefs,
         silentlyCompletedSourceRefs
-      } = this.shouldRestrictIncrementalSync(state)
-        ? this.syncForegroundSessionsOnly()
-        : this.parser.sync();
-      const restrictedTodayBucket = new Date().toISOString().slice(0, 10);
+      } = this.syncForegroundSessionsOnly();
+      const restrictedTodayBucket = getTodayBucket();
 
       for (const prompt of newPrompts) {
         await this.handleNewPrompt(
           prompt,
-          this.shouldRestrictIncrementalSync(state)
+          restrictForegroundHandling
             ? {
                 foregroundOnly: true,
                 todayBucket: restrictedTodayBucket,
@@ -741,19 +749,13 @@ export class LogSyncService {
   }
 
   private syncForegroundSessionsOnly(): ParserSyncResult {
-    const todayBucket = new Date().toISOString().slice(0, 10);
+    const todayBucket = getTodayBucket();
     const runningSessions = this.parser.getRunningSessionsSnapshot();
     const inserted: LogPrompt[] = [];
     const justCompletedSourceRefs = new Set<string>();
     const silentlyCompletedSourceRefs = new Set<string>();
 
-    const eligibleEntries = this.parser
-      .discoverScanEntries()
-      .filter(
-        (entry) =>
-          entry.dateBucket === todayBucket ||
-          runningSessions.has(logSessionKey(entry.source, entry.sessionId))
-      );
+    const eligibleEntries = this.parser.discoverTodayOrRunningEntries(todayBucket, runningSessions);
 
     for (const entry of eligibleEntries) {
       const prompts = this.parser.scanEntry(entry).filter(
@@ -780,28 +782,30 @@ export class LogSyncService {
     const state = await this.repository.getState();
     const logPrompts = this.parser.getAllPrompts();
 
-    // Build a set of sourceRefs that the parser considers completed
-    const completedSourceRefs = new Set<string>();
-    for (const lp of logPrompts) {
-      if (lp.completedAt) {
-        completedSourceRefs.add(lp.sourceRef);
-      }
-    }
-
     let reconciled = false;
     for (const card of state.cards) {
-      if (card.status !== 'active') continue;
       if (!card.sourceRef) continue;
       if (card.sourceType === 'manual' || card.sourceType === 'cursor') continue;
 
-      // For claude-code: also match by content + sourceRef since multiple prompts share sourceRef
       const matchingLogPrompt = logPrompts.find(
         (lp) => lp.sourceRef === card.sourceRef && lp.userInput === card.content && lp.completedAt
       );
+      if (!matchingLogPrompt) continue;
 
-      if (matchingLogPrompt) {
+      // Case 1: card is still active but the log shows it's completed
+      if (card.status === 'active') {
         log(`[LogSyncService] Reconciling stale active card: ${card.id}`);
         await this.repository.markCardCompletedFromLog(card.id, matchingLogPrompt.completedAt!);
+        reconciled = true;
+        continue;
+      }
+
+      // Case 2: card is completed but completedAt was never set (imported before
+      // the justCompleted fix, or sync raced). Backfill completedAt and clear
+      // justCompleted so it no longer shows as "待确认".
+      if (card.status === 'completed' && !card.completedAt) {
+        log(`[LogSyncService] Backfilling completedAt for card: ${card.id}`);
+        await this.repository.markCardCompletedFromLog(card.id, matchingLogPrompt.completedAt!, { justCompleted: false });
         reconciled = true;
       }
     }
@@ -894,6 +898,14 @@ export class LogSyncService {
 
     const card = await this.repository.saveImportedCard(this.buildImportedCardInput(prompt, options));
 
+    // When a prompt is imported as already-completed (both turns finished between
+    // sync cycles), mark it as justCompleted so it shows as "待确认" in the UI.
+    // The next prompt in the same session will auto-acknowledge it via
+    // completePreviousSameSessionPrompts.
+    if (!options.skipNotify && prompt.status === 'completed' && prompt.completedAt && card.sourceRef) {
+      await this.repository.markCardCompletedFromLog(card.sourceRef, prompt.completedAt, { justCompleted: true });
+    }
+
     if (!options.skipRefresh) {
       await PrompterPanel.refresh(this.repository);
     }
@@ -954,25 +966,22 @@ export class LogSyncService {
     const promptCreatedAtMs = Date.parse(completedAt);
 
     for (const card of state.cards) {
-      if (
-        card.status === 'completed' &&
-        card.justCompleted &&
-        card.sourceType === prompt.source &&
-        resolveSessionId(card.sourceType, card.sourceRef) === prompt.sessionId
-      ) {
-        await this.repository.acknowledgeCompletion(card.id);
-        continue;
-      }
-
-      if (card.status !== 'active' || card.runtimeState !== 'running') {
-        continue;
-      }
-
       if (card.sourceType !== prompt.source) {
         continue;
       }
 
       if (resolveSessionId(card.sourceType, card.sourceRef) !== prompt.sessionId) {
+        continue;
+      }
+
+      // Acknowledge completed cards that are still in "awaiting confirmation" state
+      if (card.status === 'completed' && card.justCompleted) {
+        await this.repository.acknowledgeCompletion(card.id);
+        continue;
+      }
+
+      // Complete active/running cards that are older than the new prompt
+      if (card.status !== 'active' || card.runtimeState !== 'running') {
         continue;
       }
 
