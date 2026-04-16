@@ -5,6 +5,16 @@ import { describe, expect, it, vi } from 'vitest';
 import { createInitialState } from '../../../src/shared/models';
 import { PromptRepository } from '../../../src/state/PromptRepository';
 
+const { log, logWarn } = vi.hoisted(() => ({
+  log: vi.fn(),
+  logWarn: vi.fn()
+}));
+
+vi.mock('../../../src/logger', () => ({
+  log,
+  logWarn
+}));
+
 describe('PromptRepository', () => {
   it('stores a draft as an unused card and rebuilds daily stats', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
@@ -59,8 +69,116 @@ describe('PromptRepository', () => {
     const snapshot = await switchedRepo.getState();
 
     expect(snapshot.cards).toEqual([]);
+    expect(snapshot.workspaceCards).toEqual([]);
     expect(snapshot.settings.dataDir).toBe(targetDir);
     expect(snapshot.settings.notifyOnFinish).toBe(false);
+  });
+
+  it('loads workspace cards from today_cards.json during repository creation', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
+    const todayCard = {
+      id: 'today-card',
+      title: 'Today card',
+      content: 'Keep startup responsive.',
+      status: 'active',
+      runtimeState: 'running',
+      groupId: 'codex:session-today',
+      groupName: 'session-today',
+      groupColor: '#22c55e',
+      sourceType: 'codex',
+      sourceRef: 'session-today:turn-1',
+      createdAt: '2026-04-16T09:00:00.000Z',
+      updatedAt: '2026-04-16T09:00:00.000Z',
+      dateBucket: '2026-04-16',
+      fileRefs: [],
+      justCompleted: false
+    };
+    const oldCard = {
+      ...todayCard,
+      id: 'old-card',
+      title: 'Old card',
+      sourceRef: 'session-old:turn-1',
+      createdAt: '2026-04-15T09:00:00.000Z',
+      updatedAt: '2026-04-15T09:00:00.000Z',
+      dateBucket: '2026-04-15'
+    };
+
+    await writeFile(join(dir, 'cards.json'), JSON.stringify([todayCard, oldCard]), 'utf8');
+    await writeFile(
+      join(dir, 'today_cards.json'),
+      JSON.stringify({ dateBucket: '2026-04-16', cards: [todayCard] }),
+      'utf8'
+    );
+
+    const repo = await PromptRepository.create(dir, () => '2026-04-16T10:00:00.000Z');
+    const snapshot = await repo.getState();
+
+    expect(snapshot.cards).toEqual([
+      expect.objectContaining({ id: 'today-card', sourceRef: 'session-today:turn-1' }),
+      expect.objectContaining({ id: 'old-card', sourceRef: 'session-old:turn-1' })
+    ]);
+    expect(snapshot.workspaceCards).toEqual([
+      expect.objectContaining({ id: 'today-card', sourceRef: 'session-today:turn-1' }),
+      expect.objectContaining({ id: 'old-card', sourceRef: 'session-old:turn-1' })
+    ]);
+  });
+
+  it('rebuilds today_cards.json from cards.json when the cache is stale', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
+    const todayCard = {
+      id: 'today-card',
+      title: 'Today card',
+      content: 'Keep startup responsive.',
+      status: 'active',
+      runtimeState: 'running',
+      groupId: 'codex:session-today',
+      groupName: 'session-today',
+      groupColor: '#22c55e',
+      sourceType: 'codex',
+      sourceRef: 'session-today:turn-1',
+      createdAt: '2026-04-16T09:00:00.000Z',
+      updatedAt: '2026-04-16T09:00:00.000Z',
+      dateBucket: '2026-04-16',
+      fileRefs: [],
+      justCompleted: false
+    };
+    const oldCard = {
+      ...todayCard,
+      id: 'old-card',
+      title: 'Old card',
+      sourceRef: 'session-old:turn-1',
+      createdAt: '2026-04-15T09:00:00.000Z',
+      updatedAt: '2026-04-15T09:00:00.000Z',
+      dateBucket: '2026-04-15'
+    };
+
+    await writeFile(join(dir, 'cards.json'), JSON.stringify([todayCard, oldCard]), 'utf8');
+    await writeFile(
+      join(dir, 'today_cards.json'),
+      JSON.stringify({ dateBucket: '2026-04-15', cards: [oldCard] }),
+      'utf8'
+    );
+
+    const repo = await PromptRepository.create(dir, () => '2026-04-16T10:00:00.000Z');
+    const snapshot = await repo.getState();
+    const rebuilt = JSON.parse(await readFile(join(dir, 'today_cards.json'), 'utf8')) as {
+      dateBucket: string;
+      cards: unknown[];
+    };
+
+    expect(snapshot.cards).toEqual([
+      expect.objectContaining({ id: 'today-card', sourceRef: 'session-today:turn-1' }),
+      expect.objectContaining({ id: 'old-card', sourceRef: 'session-old:turn-1' })
+    ]);
+    expect(snapshot.workspaceCards).toEqual([
+      expect.objectContaining({ id: 'today-card', sourceRef: 'session-today:turn-1' }),
+      expect.objectContaining({ id: 'old-card', sourceRef: 'session-old:turn-1' })
+    ]);
+    expect(rebuilt.dateBucket).toBe('2026-04-16');
+    expect(rebuilt.cards).toEqual([
+      expect.objectContaining({ id: 'today-card', sourceRef: 'session-today:turn-1' }),
+      expect.objectContaining({ id: 'old-card', sourceRef: 'session-old:turn-1' })
+    ]);
   });
 
   it('rebuilds daily stats from cards when reloading persisted state', async () => {
@@ -104,6 +222,81 @@ describe('PromptRepository', () => {
         totalCount: 1
       }
     ]);
+  });
+
+  it('deduplicates existing imported history cards during load for upgraded users', async () => {
+    log.mockClear();
+    const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
+    const duplicatedCards = [
+      {
+        id: 'legacy-duplicate',
+        title: 'Inspect flaky snapshots',
+        content: 'Inspect flaky snapshots',
+        status: 'completed',
+        runtimeState: 'finished',
+        groupId: 'old-group',
+        groupName: 'codex-session-1',
+        groupColor: '#22c55e',
+        sourceType: 'codex',
+        sourceRef: 'codex-session-1',
+        createdAt: '2026-04-08T09:00:00.000Z',
+        updatedAt: '2026-04-08T09:01:00.000Z',
+        dateBucket: '2026-04-08',
+        fileRefs: [],
+        justCompleted: false
+      },
+      {
+        id: 'turn-level-card',
+        title: 'Inspect flaky snapshots',
+        content: 'Inspect flaky snapshots',
+        status: 'completed',
+        runtimeState: 'finished',
+        groupId: 'codex:codex-session-1',
+        groupName: 'codex-session-1',
+        groupColor: '#22c55e',
+        sourceType: 'codex',
+        sourceRef: 'codex-session-1:turn-1',
+        createdAt: '2026-04-08T09:00:00.000Z',
+        updatedAt: '2026-04-08T09:05:00.000Z',
+        dateBucket: '2026-04-08',
+        fileRefs: [],
+        justCompleted: false
+      }
+    ];
+
+    await writeFile(join(dir, 'cards.json'), JSON.stringify(duplicatedCards), 'utf8');
+    await writeFile(
+      join(dir, 'today_cards.json'),
+      JSON.stringify({ dateBucket: '2026-04-08', cards: duplicatedCards }),
+      'utf8'
+    );
+
+    const repo = await PromptRepository.create(dir, () => '2026-04-08T10:00:00.000Z');
+    const snapshot = await repo.getState();
+    const persistedCards = JSON.parse(await readFile(join(dir, 'cards.json'), 'utf8')) as Array<{ sourceRef: string }>;
+    const persistedTodayCards = JSON.parse(await readFile(join(dir, 'today_cards.json'), 'utf8')) as {
+      dateBucket: string;
+      cards: Array<{ sourceRef: string }>;
+    };
+
+    expect(snapshot.cards).toHaveLength(1);
+    expect(snapshot.cards[0]).toEqual(
+      expect.objectContaining({
+        id: 'turn-level-card',
+        sourceRef: 'codex-session-1:turn-1'
+      })
+    );
+    expect(persistedCards).toEqual([
+      expect.objectContaining({
+        sourceRef: 'codex-session-1:turn-1'
+      })
+    ]);
+    expect(persistedTodayCards.cards).toEqual([
+      expect.objectContaining({
+        sourceRef: 'codex-session-1:turn-1'
+      })
+    ]);
+    expect(log).toHaveBeenCalledWith('[PromptRepository] Deduplicated 1 imported history cards during load');
   });
 
   it('uses session id as the fallback group name for codex and roo imports', async () => {
@@ -332,6 +525,85 @@ describe('PromptRepository', () => {
     ]);
   });
 
+  it('updates an existing imported card with the same sourceRef instead of creating a duplicate card', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
+    const repo = await PromptRepository.create(dir, () => '2026-04-08T10:10:00.000Z');
+
+    await repo.saveImportedCard({
+      title: 'Prompt one',
+      content: 'Inspect flaky snapshots',
+      groupName: 'codex-session-1',
+      sourceType: 'codex',
+      sourceRef: 'codex-session-1:turn-1',
+      status: 'active',
+      runtimeState: 'running',
+      createdAt: '2026-04-08T09:00:00.000Z'
+    });
+
+    await repo.saveImportedCard({
+      title: 'Prompt one refined',
+      content: 'Inspect flaky snapshots with history import',
+      groupName: 'codex-session-1',
+      sourceType: 'codex',
+      sourceRef: 'codex-session-1:turn-1',
+      status: 'completed',
+      runtimeState: 'finished',
+      createdAt: '2026-04-08T09:00:00.000Z'
+    });
+
+    const snapshot = await repo.getState();
+    const matchingCards = snapshot.cards.filter((card) => card.sourceRef === 'codex-session-1:turn-1');
+
+    expect(matchingCards).toHaveLength(1);
+    expect(matchingCards[0]).toEqual(
+      expect.objectContaining({
+        title: 'Prompt one refined',
+        content: 'Inspect flaky snapshots with history import',
+        status: 'completed',
+        runtimeState: 'finished'
+      })
+    );
+  });
+
+  it('deduplicates imported history cards by session id, timestamp, and prompt content when sourceRef changes', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
+    const repo = await PromptRepository.create(dir, () => '2026-04-08T10:10:00.000Z');
+
+    await repo.saveImportedCard({
+      title: 'Prompt one',
+      content: 'Inspect flaky snapshots',
+      groupName: 'codex-session-1',
+      sourceType: 'codex',
+      sourceRef: 'codex-session-1:turn-legacy',
+      status: 'completed',
+      runtimeState: 'finished',
+      createdAt: '2026-04-08T09:00:00.000Z'
+    });
+
+    await repo.saveImportedCard({
+      title: 'Prompt one imported again',
+      content: 'Inspect flaky snapshots',
+      groupName: 'codex-session-1',
+      sourceType: 'codex',
+      sourceRef: 'codex-session-1:turn-reimported',
+      status: 'completed',
+      runtimeState: 'finished',
+      createdAt: '2026-04-08T09:00:00.000Z'
+    });
+
+    const snapshot = await repo.getState();
+    const matchingCards = snapshot.cards.filter((card) => card.content === 'Inspect flaky snapshots');
+
+    expect(matchingCards).toHaveLength(1);
+    expect(matchingCards[0]).toEqual(
+      expect.objectContaining({
+        sourceRef: 'codex-session-1:turn-reimported',
+        groupId: 'codex:codex-session-1',
+        groupName: 'codex-session-1'
+      })
+    );
+  });
+
   it('persists resumable history import checkpoints across reloads', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
     const now = () => '2026-04-08T10:00:00.000Z';
@@ -507,6 +779,7 @@ describe('PromptRepository', () => {
 
     snapshot = await repo.getState();
     expect(snapshot.cards).toEqual([]);
+    expect(snapshot.workspaceCards).toEqual([]);
     expect(snapshot.modularPrompts).toEqual([]);
     expect(snapshot.dailyStats).toEqual([]);
     expect(snapshot.settings.notifyOnFinish).toBe(false);
@@ -519,8 +792,99 @@ describe('PromptRepository', () => {
       'history-import.json',
       'modular-prompts.json',
       'session-groups.json',
-      'settings.json'
+      'settings.json',
+      'today_cards.json'
     ]);
+  });
+
+  it('persists cards.json as the full source of truth while writing today_cards.json as a filtered workspace projection', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
+    const repo = await PromptRepository.create(dir, () => '2026-04-16T10:00:00.000Z');
+
+    await repo.saveImportedCards([
+      {
+        title: 'Today prompt',
+        content: 'Keep workspace responsive.',
+        groupName: 'session-today',
+        sourceType: 'codex',
+        sourceRef: 'session-today:turn-1',
+        status: 'active',
+        runtimeState: 'running',
+        createdAt: '2026-04-16T09:00:00.000Z'
+      },
+      {
+        title: 'Old prompt',
+        content: 'Historical prompt content.',
+        groupName: 'session-old',
+        sourceType: 'codex',
+        sourceRef: 'session-old:turn-1',
+        status: 'completed',
+        runtimeState: 'finished',
+        createdAt: '2026-04-15T09:00:00.000Z'
+      }
+    ]);
+
+    const allCards = JSON.parse(await readFile(join(dir, 'cards.json'), 'utf8')) as Array<{ dateBucket: string }>;
+    const todayCards = JSON.parse(await readFile(join(dir, 'today_cards.json'), 'utf8')) as {
+      dateBucket: string;
+      cards: Array<{ dateBucket: string; status: string }>;
+    };
+    const snapshot = await repo.getState();
+
+    expect(allCards).toHaveLength(2);
+    expect(snapshot.cards).toHaveLength(2);
+    expect(snapshot.workspaceCards).toHaveLength(1);
+    expect(todayCards.dateBucket).toBe('2026-04-16');
+    expect(todayCards.cards).toEqual([
+      expect.objectContaining({
+        dateBucket: '2026-04-16',
+        status: 'active'
+      })
+    ]);
+  });
+
+  it('rotates the today cache without deleting historical cards', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
+    let currentNow = '2026-04-16T23:59:00.000Z';
+    const repo = await PromptRepository.create(dir, () => currentNow);
+
+    await repo.saveImportedCard({
+      title: 'Late prompt',
+      content: 'Still visible before midnight.',
+      groupName: 'session-today',
+      sourceType: 'codex',
+      sourceRef: 'session-today:turn-1',
+      status: 'active',
+      runtimeState: 'running',
+      createdAt: '2026-04-16T23:50:00.000Z'
+    });
+
+    currentNow = '2026-04-17T00:00:01.000Z';
+    await repo.rotateTodayCards();
+
+    const snapshot = await repo.getState();
+    const todayCards = JSON.parse(await readFile(join(dir, 'today_cards.json'), 'utf8')) as {
+      dateBucket: string;
+      cards: unknown[];
+    };
+    const allCards = JSON.parse(await readFile(join(dir, 'cards.json'), 'utf8')) as Array<{ dateBucket: string }>;
+
+    expect(snapshot.workspaceCards).toEqual([
+      expect.objectContaining({
+        sourceRef: 'session-today:turn-1'
+      })
+    ]);
+    expect(snapshot.cards).toHaveLength(1);
+    expect(todayCards).toEqual({
+      dateBucket: '2026-04-17',
+      cards: [
+        expect.objectContaining({
+          sourceRef: 'session-today:turn-1'
+        })
+      ],
+      generatedAt: '2026-04-17T00:00:01.000Z'
+    });
+    expect(allCards).toContainEqual(expect.objectContaining({ sourceRef: 'session-today:turn-1' }));
   });
 
   it('persists normalized shortcut settings back to disk when they are missing', async () => {
@@ -686,10 +1050,17 @@ describe('PromptRepository', () => {
     expect(after.mtimeMs).toBe(before.mtimeMs);
   });
 
-  it('surfaces malformed persisted json instead of silently falling back', async () => {
+  it('recovers from malformed persisted json by quarantining the broken file and falling back', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
     await writeFile(join(dir, 'cards.json'), '{not valid json', 'utf8');
 
-    await expect(PromptRepository.create(dir)).rejects.toThrow();
+    const repo = await PromptRepository.create(dir, () => '2026-04-08T10:00:00.000Z');
+    const snapshot = await repo.getState();
+    const files = await readdir(dir);
+
+    expect(snapshot.cards).toEqual([]);
+    expect(files).toContain('cards.json');
+    expect(files.some((file) => file.startsWith('cards.json.corrupted-'))).toBe(true);
+    expect(await readFile(join(dir, 'cards.json'), 'utf8')).toBe('[]');
   });
 });

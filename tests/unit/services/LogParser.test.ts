@@ -1,7 +1,18 @@
-import * as fs from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('node:fs', async () => {
+  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  return {
+    ...actual,
+    existsSync: vi.fn(actual.existsSync),
+    readdirSync: vi.fn(actual.readdirSync),
+    statSync: vi.fn(actual.statSync)
+  };
+});
+
+import * as fs from 'node:fs';
 
 vi.mock('vscode', () => ({
   window: {
@@ -69,13 +80,13 @@ describe('LogParser Claude event filtering', () => {
   });
 
   it('marks the latest Claude prompt as completed when an api_error is logged', () => {
-    const tempDir = mkdtempSync(path.join(tmpdir(), 'prompter-claude-log-'));
+    const tempDir = fs.mkdtempSync(path.join(tmpdir(), 'prompter-claude-log-'));
     const projectDir = path.join(tempDir, 'project-a');
     const logPath = path.join(projectDir, 'session-1.jsonl');
 
     try {
-      mkdirSync(projectDir, { recursive: true });
-      writeFileSync(
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(
         logPath,
         [
           JSON.stringify({
@@ -111,7 +122,7 @@ describe('LogParser Claude event filtering', () => {
         })
       ]);
     } finally {
-      rmSync(tempDir, { recursive: true, force: true });
+      fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
 });
@@ -119,10 +130,6 @@ describe('LogParser Claude event filtering', () => {
 describe('LogParser lightweight today/running discovery', () => {
   it('returns only today entries plus recently running sessions for workspace loading', () => {
     const parser = new LogParser();
-
-    const existsSyncSpy = vi.spyOn(fs, 'existsSync');
-    const readdirSyncSpy = vi.spyOn(fs, 'readdirSync');
-    const statSyncSpy = vi.spyOn(fs, 'statSync');
 
     const claudeRoot = path.join(homedir(), '.claude', 'projects');
     const codexRoot = path.join(homedir(), '.codex', 'sessions');
@@ -149,11 +156,11 @@ describe('LogParser lightweight today/running discovery', () => {
       [path.join(runningDir, 'running-codex.jsonl'), { isDirectory: false, mtimeMs: Date.parse('2026-04-08T11:50:00.000Z') }]
     ]);
 
-    existsSyncSpy.mockImplementation((targetPath: any) => {
+    vi.mocked(fs.existsSync).mockImplementation((targetPath: any) => {
       const normalized = String(targetPath);
       return directories.has(normalized) || stats.has(normalized);
     });
-    readdirSyncSpy.mockImplementation((targetPath: any) => {
+    vi.mocked(fs.readdirSync).mockImplementation((targetPath: any) => {
       const normalized = String(targetPath);
       if (normalized === claudeRoot) return ['project-a'] as any;
       if (normalized === path.join(claudeRoot, 'project-a')) return ['today.jsonl', 'old.jsonl'] as any;
@@ -166,7 +173,7 @@ describe('LogParser lightweight today/running discovery', () => {
       if (normalized === runningDir) return ['running-codex.jsonl'] as any;
       return [] as any;
     });
-    statSyncSpy.mockImplementation((targetPath: any) => {
+    vi.mocked(fs.statSync).mockImplementation((targetPath: any) => {
       const normalized = String(targetPath);
       const stat = stats.get(normalized);
       if (!stat) {
@@ -188,9 +195,6 @@ describe('LogParser lightweight today/running discovery', () => {
       ]);
     } finally {
       Date.now = originalDateNow;
-      existsSyncSpy.mockRestore();
-      readdirSyncSpy.mockRestore();
-      statSyncSpy.mockRestore();
     }
   });
 });

@@ -1,4 +1,5 @@
 import type { FileRef, ModularPrompt, PromptCard, PromptStatus, PrompterSettings, PrompterState } from '../../../src/shared/models';
+import type { PrompterToastMessage } from '../../../src/shared/messages';
 
 // Must stay in sync with the same palette in PromptRepository.ts
 const GROUP_COLORS = [
@@ -35,11 +36,14 @@ type PrompterAction =
   | { type: 'card:delete'; payload: { cardId: string } }
   | { type: 'card:acknowledgeCompletion'; payload: { cardId: string } }
   | { type: 'group:rename'; payload: { groupId: string; nextName: string } }
-  | { type: 'modularPrompt:save'; payload: ModularPrompt };
+  | { type: 'modularPrompt:save'; payload: ModularPrompt }
+  | { type: 'toast:show'; payload: PrompterToastMessage }
+  | { type: 'toast:dismiss'; payload: { id: string } };
 
 export interface PrompterStoreState {
   state: PrompterState;
   workspaceDraft: WorkspaceDraft;
+  toasts: PrompterToastMessage[];
   lastSavedCardId?: string;
 }
 
@@ -51,6 +55,48 @@ function createDraftFromState(_: PrompterState): WorkspaceDraft {
     editingCardId: undefined,
     editingCardStatus: undefined,
     cursorIndex: undefined
+  };
+}
+
+function updateWorkspaceCards(
+  workspaceCards: PromptCard[],
+  updater: (card: PromptCard) => PromptCard | null
+): PromptCard[] {
+  const nextCards: PromptCard[] = [];
+  for (const card of workspaceCards) {
+    const nextCard = updater(card);
+    if (nextCard) {
+      nextCards.push(nextCard);
+    }
+  }
+  return nextCards;
+}
+
+function isSettledCard(card: PromptCard): boolean {
+  return card.status === 'completed' || card.runtimeState === 'finished' || Boolean(card.completedAt);
+}
+
+function isRegressedRunningCard(card: PromptCard): boolean {
+  return card.status === 'active' && card.runtimeState === 'running' && !card.completedAt;
+}
+
+function mergeSyncedCards(previousCards: PromptCard[], nextCards: PromptCard[]): PromptCard[] {
+  const previousById = new Map(previousCards.map((card) => [card.id, card] as const));
+
+  return nextCards.map((card) => {
+    const previousCard = previousById.get(card.id);
+    if (previousCard && isSettledCard(previousCard) && isRegressedRunningCard(card)) {
+      return previousCard;
+    }
+    return card;
+  });
+}
+
+function mergeSyncedState(previousState: PrompterState, nextState: PrompterState): PrompterState {
+  return {
+    ...nextState,
+    cards: mergeSyncedCards(previousState.cards, nextState.cards),
+    workspaceCards: mergeSyncedCards(previousState.workspaceCards, nextState.workspaceCards)
   };
 }
 
@@ -69,7 +115,7 @@ function prompterReducer(store: PrompterStoreState, action: PrompterAction): Pro
       return {
         ...store,
         state: {
-          ...action.payload,
+          ...mergeSyncedState(store.state, action.payload),
           activeView: store.state.activeView
         }
       };
@@ -201,6 +247,25 @@ function prompterReducer(store: PrompterStoreState, action: PrompterAction): Pro
                   justCompleted: false
                 }
               : card
+          ),
+          workspaceCards: updateWorkspaceCards(store.state.workspaceCards, (card) =>
+            card.id === action.payload.cardId
+              ? {
+                  ...card,
+                  status: action.payload.nextStatus,
+                  runtimeState:
+                    action.payload.nextStatus === 'completed'
+                      ? 'finished'
+                      : action.payload.nextStatus === 'active'
+                        ? 'running'
+                        : 'unknown',
+                  completedAt:
+                    action.payload.nextStatus === 'completed'
+                      ? new Date().toISOString()
+                      : undefined,
+                  justCompleted: false
+                }
+              : card
           )
         }
       };
@@ -209,7 +274,8 @@ function prompterReducer(store: PrompterStoreState, action: PrompterAction): Pro
         ...store,
         state: {
           ...store.state,
-          cards: store.state.cards.filter((card) => card.id !== action.payload.cardId)
+          cards: store.state.cards.filter((card) => card.id !== action.payload.cardId),
+          workspaceCards: store.state.workspaceCards.filter((card) => card.id !== action.payload.cardId)
         }
       };
     case 'card:acknowledgeCompletion':
@@ -218,6 +284,11 @@ function prompterReducer(store: PrompterStoreState, action: PrompterAction): Pro
         state: {
           ...store.state,
           cards: store.state.cards.map((card) =>
+            card.id === action.payload.cardId
+              ? { ...card, status: 'completed', runtimeState: 'finished', justCompleted: false }
+              : card
+          ),
+          workspaceCards: updateWorkspaceCards(store.state.workspaceCards, (card) =>
             card.id === action.payload.cardId
               ? { ...card, status: 'completed', runtimeState: 'finished', justCompleted: false }
               : card
@@ -230,6 +301,15 @@ function prompterReducer(store: PrompterStoreState, action: PrompterAction): Pro
         state: {
           ...store.state,
           cards: store.state.cards.map((card) =>
+            card.groupId === action.payload.groupId
+              ? {
+                  ...card,
+                  groupName: action.payload.nextName,
+                  groupColor: groupColor(action.payload.nextName)
+                }
+              : card
+          ),
+          workspaceCards: updateWorkspaceCards(store.state.workspaceCards, (card) =>
             card.groupId === action.payload.groupId
               ? {
                   ...card,
@@ -260,6 +340,19 @@ function prompterReducer(store: PrompterStoreState, action: PrompterAction): Pro
         }
       };
     }
+    case 'toast:show':
+      return {
+        ...store,
+        toasts: [
+          ...store.toasts.filter((toast) => toast.id !== action.payload.id),
+          action.payload
+        ]
+      };
+    case 'toast:dismiss':
+      return {
+        ...store,
+        toasts: store.toasts.filter((toast) => toast.id !== action.payload.id)
+      };
     default:
       return store;
   }
@@ -268,7 +361,8 @@ function prompterReducer(store: PrompterStoreState, action: PrompterAction): Pro
 export function createInitialStoreState(initialState: PrompterState): PrompterStoreState {
   return {
     state: initialState,
-    workspaceDraft: createDraftFromState(initialState)
+    workspaceDraft: createDraftFromState(initialState),
+    toasts: []
   };
 }
 

@@ -7,6 +7,7 @@ import type {
   PrompterState,
   PrompterView
 } from '../../../src/shared/models';
+import type { PrompterToastMessage } from '../../../src/shared/messages';
 import {
   createInitialStoreState,
   createPrompterStoreReducer,
@@ -72,10 +73,19 @@ export function usePrompterStore(initialState: PrompterState) {
     dispatch({ type: 'modularPrompt:save', payload: prompt });
   }, []);
 
+  const showToast = useCallback((toast: PrompterToastMessage) => {
+    dispatch({ type: 'toast:show', payload: toast });
+  }, []);
+
+  const dismissToast = useCallback((id: string) => {
+    dispatch({ type: 'toast:dismiss', payload: { id } });
+  }, []);
+
   return useMemo(
     () => ({
       state: store.state,
       workspaceDraft: store.workspaceDraft,
+      toasts: store.toasts,
       lastSavedCardId: store.lastSavedCardId,
       replaceState,
       syncState,
@@ -90,18 +100,22 @@ export function usePrompterStore(initialState: PrompterState) {
       deleteCard,
       acknowledgeCompletion,
       renameGroup,
-      saveModularPrompt
+      saveModularPrompt,
+      showToast,
+      dismissToast
     }),
     [
       insertImportedText,
       acknowledgeCompletion,
       deleteCard,
+      dismissToast,
       markDraftSaved,
       moveCard,
       renameGroup,
       replaceState,
       saveModularPrompt,
       setView,
+      showToast,
       selectHistoryDate,
       store,
       syncState,

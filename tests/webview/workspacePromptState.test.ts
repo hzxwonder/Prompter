@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { PromptCard } from '../../src/shared/models';
+import { createInitialState } from '../../src/shared/models';
 import { getPromptActivityState } from '../../webview/src/lib/promptActivity';
+import { createInitialStoreState, createPrompterStoreReducer } from '../../webview/src/store/prompterReducer';
 
 const baseCard: PromptCard = {
   id: 'card-1',
@@ -44,6 +46,47 @@ describe('workspace prompt activity state', () => {
       getPromptActivityState({
         card: { ...baseCard, status: 'completed', runtimeState: 'finished', completedAt: '2026-04-08T10:30:00.000Z' },
         nowMs: Date.parse('2026-04-08T12:10:00.000Z')
+      })
+    ).toBe('completed');
+  });
+
+  it('keeps a completed card completed when a stale sync payload regresses it back to running', () => {
+    const reducer = createPrompterStoreReducer();
+    const completedCard: PromptCard = {
+      ...baseCard,
+      status: 'completed',
+      runtimeState: 'finished',
+      completedAt: '2026-04-08T10:30:00.000Z'
+    };
+    const initialState = createInitialState('2026-04-08T12:00:00.000Z');
+    const store = {
+      ...createInitialStoreState(initialState),
+      state: {
+        ...initialState,
+        cards: [completedCard],
+        workspaceCards: [completedCard]
+      }
+    };
+    const regressedCard: PromptCard = {
+      ...completedCard,
+      status: 'active',
+      runtimeState: 'running',
+      completedAt: undefined
+    };
+    const staleSyncState = {
+      ...initialState,
+      cards: [regressedCard],
+      workspaceCards: [regressedCard]
+    };
+
+    const nextStore = reducer(store, { type: 'state:sync', payload: staleSyncState });
+
+    expect(nextStore.state.cards[0].status).toBe('completed');
+    expect(nextStore.state.cards[0].runtimeState).toBe('finished');
+    expect(
+      getPromptActivityState({
+        card: nextStore.state.cards[0],
+        nowMs: Date.parse('2026-04-08T13:00:00.000Z')
       })
     ).toBe('completed');
   });

@@ -142,6 +142,7 @@ export interface HistoryImportState {
 export interface PrompterState {
   activeView: PrompterView;
   cards: PromptCard[];
+  workspaceCards: PromptCard[];
   modularPrompts: ModularPrompt[];
   dailyStats: DailyStats[];
   historyImport: HistoryImportState;
@@ -169,19 +170,29 @@ function padDatePart(value: number): string {
   return String(value).padStart(2, '0');
 }
 
+export function toLocalDateBucket(value: Date | number): string {
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return '';
+  }
+
+  return `${parsed.getFullYear()}-${padDatePart(parsed.getMonth() + 1)}-${padDatePart(parsed.getDate())}`;
+}
+
 export function toDateBucket(isoString: string): string {
   const parsed = new Date(isoString);
   if (Number.isNaN(parsed.getTime())) {
     return isoString.slice(0, 10);
   }
 
-  return `${parsed.getFullYear()}-${padDatePart(parsed.getMonth() + 1)}-${padDatePart(parsed.getDate())}`;
+  return toLocalDateBucket(parsed);
 }
 
 export function createInitialState(nowIso: string, _platform?: string): PrompterState {
   return {
     activeView: 'workspace',
     cards: [],
+    workspaceCards: [],
     modularPrompts: [],
     dailyStats: [],
     historyImport: createInitialHistoryImportState(),

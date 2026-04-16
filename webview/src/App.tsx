@@ -4,6 +4,7 @@ import type { ExtensionToWebviewMessage } from '../../src/shared/messages';
 import { postMessage } from './api/vscode';
 import { playBuiltinTone } from './lib/audioUtils';
 import { SidebarNav } from './components/SidebarNav';
+import { ToastViewport } from './components/ToastViewport';
 import { usePrompterStore } from './store/usePrompterStore';
 import { WorkspacePage } from './pages/WorkspacePage';
 import { HistoryPage } from './pages/HistoryPage';
@@ -30,6 +31,7 @@ export function App({
   const {
     state,
     workspaceDraft,
+    toasts,
     lastSavedCardId,
     syncState,
     syncHistoryImport,
@@ -42,8 +44,13 @@ export function App({
     moveCard,
     deleteCard,
     acknowledgeCompletion,
-    renameGroup
+    renameGroup,
+    showToast,
+    dismissToast
   } = usePrompterStore(initialState);
+  const workspaceCards = state.workspaceCards.length > 0 || state.cards.length === 0
+    ? state.workspaceCards
+    : state.cards;
   useEffect(() => {
     if (lastMessage?.type === 'draft:saved') {
       markDraftSaved(lastMessage.payload.card as PromptCard, lastMessage.payload.state);
@@ -93,6 +100,10 @@ export function App({
       playBuiltinTone(lastMessage.payload.tone);
     }
 
+    if (lastMessage?.type === 'toast:show') {
+      showToast(lastMessage.payload);
+    }
+
     if (lastMessage?.type === 'cards:updated' || lastMessage?.type === 'modularPrompts:updated') {
       syncState(lastMessage.payload.state);
     }
@@ -104,7 +115,7 @@ export function App({
     if (lastMessage?.type === 'historyImport:updated') {
       syncHistoryImport(lastMessage.payload);
     }
-  }, [insertImportedText, lastMessage, markDraftSaved, syncHistoryImport, syncState, updateSettings]);
+  }, [insertImportedText, lastMessage, markDraftSaved, showToast, syncHistoryImport, syncState, updateSettings]);
 
   const handleViewChange = (view: PrompterView) => {
     if (view !== 'shortcuts') {
@@ -125,7 +136,7 @@ export function App({
         {state.activeView === 'workspace' && (
           <WorkspacePage
             language={state.settings.language}
-            cards={state.cards}
+            cards={workspaceCards}
             draft={workspaceDraft}
             onDraftChange={updateWorkspaceDraft}
             onMoveCard={(cardId, nextStatus) => {
@@ -196,6 +207,16 @@ export function App({
           />
         )}
       </main>
+      <ToastViewport
+        toasts={toasts}
+        onDismiss={dismissToast}
+        onAction={(toast) => {
+          if (toast.actionCommand === 'prompter.open') {
+            handleViewChange('workspace');
+          }
+          dismissToast(toast.id);
+        }}
+      />
     </div>
   );
 }

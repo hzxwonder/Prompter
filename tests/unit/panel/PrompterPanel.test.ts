@@ -3,6 +3,15 @@ import type { Disposable, Webview, WebviewPanel } from 'vscode';
 import { createInitialState } from '../../../src/shared/models';
 import { PrompterPanel } from '../../../src/panel/PrompterPanel';
 
+const { execFile, log, logWarn, logError } = vi.hoisted(() => ({
+  execFile: vi.fn((_cmd: string, _args: string[], callback?: (error: Error | null) => void) => {
+    callback?.(null);
+  }),
+  log: vi.fn(),
+  logWarn: vi.fn(),
+  logError: vi.fn()
+}));
+
 vi.mock('vscode', () => ({
   window: {
     createWebviewPanel: vi.fn(),
@@ -16,6 +25,16 @@ vi.mock('vscode', () => ({
 
 vi.mock('../../../src/panel/getWebviewHtml', () => ({
   getWebviewHtml: vi.fn(() => '<html></html>')
+}));
+
+vi.mock('node:child_process', () => ({
+  execFile
+}));
+
+vi.mock('../../../src/logger', () => ({
+  log,
+  logWarn,
+  logError
 }));
 
 function createDisposable(): Disposable {
@@ -52,10 +71,17 @@ function createMockPanel(
 }
 
 describe('PrompterPanel', () => {
+  const originalPlatform = process.platform;
+
   beforeEach(async () => {
     const vscode = await import('vscode');
     vi.mocked(vscode.window.createWebviewPanel).mockReset();
     vi.mocked(vscode.window.showWarningMessage).mockReset();
+    execFile.mockClear();
+    log.mockClear();
+    logWarn.mockClear();
+    logError.mockClear();
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
     PrompterPanel['currentPanel'] = undefined;
   });
 
@@ -79,6 +105,7 @@ describe('PrompterPanel', () => {
       | ((message: { type: 'settings:update'; payload: { notifyOnFinish: boolean } } | { type: 'cache:clear' }) => Promise<void>)
       | undefined;
     const vscode = await import('vscode');
+    vi.mocked(vscode.window.showWarningMessage).mockResolvedValue('确认清理' as never);
 
     vi.mocked(vscode.window.createWebviewPanel).mockReturnValue(
       createMockPanel(postMessage, (listener) => {
@@ -110,6 +137,42 @@ describe('PrompterPanel', () => {
     expect(postMessage).toHaveBeenCalledWith({
       type: 'state:replace',
       payload: clearedState
+    });
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      '是否确认清理 Prompter 缓存？此操作会移除当前工作区中的缓存 prompt 数据和导入状态。',
+      '确认清理',
+      '取消'
+    );
+  });
+
+  it('does not clear cache when the user cancels the confirmation dialog', async () => {
+    const initialState = createInitialState('2026-04-08T10:00:00.000Z');
+    const postMessage = vi.fn();
+    let onDidReceiveMessage:
+      | ((message: { type: 'cache:clear' }) => Promise<void>)
+      | undefined;
+    const vscode = await import('vscode');
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValue(
+      createMockPanel(postMessage, (listener) => {
+        onDidReceiveMessage = listener as typeof onDidReceiveMessage;
+        return createDisposable();
+      })
+    );
+    vi.mocked(vscode.window.showWarningMessage).mockResolvedValue('取消' as never);
+
+    const repository = {
+      clearCache: vi.fn().mockResolvedValue(undefined),
+      getState: vi.fn().mockResolvedValue(initialState)
+    };
+
+    await PrompterPanel.createOrShow({} as never, repository as never);
+
+    await onDidReceiveMessage?.({ type: 'cache:clear' });
+
+    expect(repository.clearCache).not.toHaveBeenCalled();
+    expect(postMessage).not.toHaveBeenCalledWith({
+      type: 'state:replace',
+      payload: initialState
     });
   });
 
@@ -233,6 +296,112 @@ describe('PrompterPanel', () => {
       type: 'historyImport:updated',
       payload: state.historyImport
     });
+  });
+
+  it('posts toast messages through the active Prompter panel', async () => {
+    const postMessage = vi.fn().mockResolvedValue(true);
+    const vscode = await import('vscode');
+
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValue(
+      createMockPanel(postMessage, () => createDisposable())
+    );
+
+    const repository = {
+      getState: vi.fn().mockResolvedValue(createInitialState('2026-04-16T09:00:00.000Z'))
+    };
+
+    await PrompterPanel.createOrShow({} as never, repository as never);
+    postMessage.mockClear();
+
+    await PrompterPanel.showToast({
+      id: 'toast-1',
+      kind: 'info',
+      message: 'Prompt completed',
+      actionLabel: 'View',
+      actionCommand: 'prompter.open'
+    } as never);
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'toast:show',
+      payload: {
+        id: 'toast-1',
+        kind: 'info',
+        message: 'Prompt completed',
+        actionLabel: 'View',
+        actionCommand: 'prompter.open'
+      }
+    });
+  });
+
+  it('plays the built-in completion tone through a host-side fallback when the panel is closed', () => {
+    PrompterPanel['currentPanel'] = undefined;
+
+    PrompterPanel.playCompletionTone('chime');
+
+    expect(log).toHaveBeenCalledWith('[PrompterPanel] Completion tone requested: chime, using host fallback playback');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('[PrompterPanel] Host tone playback starting'));
+    expect(execFile).toHaveBeenCalled();
+  });
+
+  it('uses host playback for built-in tones even when the panel is open', async () => {
+    const postMessage = vi.fn().mockResolvedValue(true);
+    const vscode = await import('vscode');
+
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValue(
+      createMockPanel(postMessage, () => createDisposable())
+    );
+
+    const repository = {
+      getState: vi.fn().mockResolvedValue(createInitialState('2026-04-16T09:00:00.000Z'))
+    };
+
+    await PrompterPanel.createOrShow({} as never, repository as never);
+    postMessage.mockClear();
+
+    PrompterPanel.playCompletionTone('ding');
+
+    expect(log).toHaveBeenCalledWith(
+      '[PrompterPanel] Completion tone requested: ding, using host playback even though the panel is open'
+    );
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('[PrompterPanel] Host tone playback starting'));
+    expect(postMessage).not.toHaveBeenCalledWith({
+      type: 'audio:play',
+      payload: { tone: 'ding' }
+    });
+    expect(execFile).toHaveBeenCalled();
+  });
+
+  it('logs Linux fallback transitions when builtin tone playback falls back from aplay to paplay to shell bell', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    execFile.mockImplementation((cmd: string, _args: string[], callback?: (error: Error | null) => void) => {
+      if (cmd === 'aplay' || cmd === 'paplay') {
+        callback?.(new Error(`${cmd} failed`));
+        return;
+      }
+
+      callback?.(null);
+    });
+
+    PrompterPanel.playCompletionTone('soft-bell');
+
+    expect(logWarn).toHaveBeenCalledWith(expect.stringContaining('aplay failed for tone soft-bell'));
+    expect(logWarn).toHaveBeenCalledWith(expect.stringContaining('paplay failed for tone soft-bell'));
+    expect(log).toHaveBeenCalledWith('[PrompterPanel] Falling back to shell bell for tone: soft-bell');
+    expect(execFile).toHaveBeenCalledWith('sh', ['-lc', 'printf "\\a"'], expect.any(Function));
+  });
+
+  it('logs an error when the Linux shell bell fallback also fails', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    execFile.mockImplementation((cmd: string, _args: string[], callback?: (error: Error | null) => void) => {
+      callback?.(new Error(`${cmd} failed`));
+    });
+
+    PrompterPanel.playCompletionTone('soft-bell');
+
+    expect(logError).toHaveBeenCalledWith(
+      'Failed to play fallback bell for tone: soft-bell',
+      expect.objectContaining({ message: 'sh failed' })
+    );
   });
 
   it('asks for confirmation before starting history import for the first time', async () => {

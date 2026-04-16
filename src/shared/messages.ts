@@ -11,6 +11,14 @@ import type {
   PrompterView
 } from './models';
 
+export interface PrompterToastMessage {
+  id: string;
+  kind: 'info' | 'success';
+  message: string;
+  actionLabel?: string;
+  actionCommand?: 'prompter.open';
+}
+
 export type ExtensionToWebviewMessage =
   | { type: 'hydrate'; payload: PrompterState }
   | { type: 'state:replace'; payload: PrompterState }
@@ -22,6 +30,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'settings:shortcuts:update:success'; payload: { shortcuts: PrompterSettings['shortcuts'] } }
   | { type: 'settings:shortcuts:update:error'; payload: { message: string } }
   | { type: 'composer:insertText'; payload: { text: string; fileRefs?: FileRef[]; insertAt?: number } }
+  | { type: 'toast:show'; payload: PrompterToastMessage }
   | { type: 'audio:play'; payload: { tone: BuiltinTone } };
 
 export type WebviewToExtensionMessage =

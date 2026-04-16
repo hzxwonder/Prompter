@@ -3,7 +3,7 @@ import { exec } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { availableParallelism, homedir } from 'node:os';
-import { toDateBucket, type BuiltinTone, type HistoryImportEntry } from '../shared/models';
+import { toDateBucket, toLocalDateBucket, type BuiltinTone, type HistoryImportEntry } from '../shared/models';
 import { getLocaleText } from '../shared/i18n';
 import type { PromptRepository } from '../state/PromptRepository';
 import { PrompterPanel } from '../panel/PrompterPanel';
@@ -39,18 +39,36 @@ interface ParserSyncResult {
   silentlyCompletedSourceRefs: string[];
 }
 
+interface WatchPoolSnapshotEntry {
+  path: string;
+  source: 'claude-code' | 'codex' | 'roo-code';
+  lastSize: number;
+  lastMtimeMs: number;
+  lastChangedAt: number;
+}
+
 function getTodayBucket(now = new Date()): string {
-  return now.toISOString().slice(0, 10);
+  return toLocalDateBucket(now);
 }
 
 function getHistoryLookbackStartBucket(now = new Date()): string {
   const lookbackStart = new Date(now);
-  lookbackStart.setUTCDate(lookbackStart.getUTCDate() - HISTORY_LOOKBACK_DAYS);
-  return lookbackStart.toISOString().slice(0, 10);
+  lookbackStart.setDate(lookbackStart.getDate() - HISTORY_LOOKBACK_DAYS);
+  return toLocalDateBucket(lookbackStart);
 }
 
-function shouldIncludeHistoryBackfillEntry(entry: LogSessionScanEntry, todayBucket: string, lookbackStartBucket: string): boolean {
-  return entry.dateBucket !== todayBucket && entry.dateBucket >= lookbackStartBucket;
+function shouldIncludeHistoryBackfillEntry(entry: LogSessionScanEntry, _todayBucket: string, lookbackStartBucket: string): boolean {
+  const lastModifiedBucket = toLocalDateBucket(entry.lastModifiedMs);
+  return entry.dateBucket >= lookbackStartBucket || lastModifiedBucket >= lookbackStartBucket;
+}
+
+function shouldIncludeHistoryPrompt(prompt: ParsedPromptRecord, todayBucket: string, lookbackStartBucket: string): boolean {
+  const promptBucket = toDateBucket(prompt.createdAt);
+  return promptBucket >= lookbackStartBucket && promptBucket < todayBucket;
+}
+
+function shouldIncludeTodayPrompt(prompt: ParsedPromptRecord, todayBucket: string): boolean {
+  return toDateBucket(prompt.createdAt) === todayBucket;
 }
 
 export class LogSyncService {
@@ -148,7 +166,10 @@ export class LogSyncService {
         .map((entry) => [`${entry.source}:${entry.path}`, entry] as const)
     );
     const runningSessions = this.parser.getRunningSessionsSnapshot();
-    const pendingEntries = [...state.historyImport.pendingEntries].filter((entry) => entry.dateBucket >= lookbackStartBucket);
+    const pendingEntries = [...state.historyImport.pendingEntries].filter((entry) => {
+      const lastModifiedBucket = toLocalDateBucket(entry.lastModifiedMs);
+      return entry.dateBucket >= lookbackStartBucket || lastModifiedBucket >= lookbackStartBucket;
+    });
     const pendingEntryMap = new Map(pendingEntries.map((entry) => [entry.id, entry] as const));
     const completedEntries = [...state.historyImport.completedEntries];
     const completedEntrySet = new Set(completedEntries);
@@ -257,7 +278,12 @@ export class LogSyncService {
               todayBucket,
               skipRefresh: true,
               skipNotify: true
-            }, historyParsePool ? (scanEntry) => historyParsePool.scanEntry(scanEntry) : undefined);
+            }, async (scanEntry) => {
+              const prompts = historyParsePool
+                ? await historyParsePool.scanEntry(scanEntry)
+                : this.parser.scanEntry(scanEntry);
+              return prompts.filter((prompt) => shouldIncludeHistoryPrompt(prompt, todayBucket, lookbackStartBucket));
+            });
 
             await scheduleMutation(async () => {
               processedPrompts += promptCount;
@@ -319,8 +345,30 @@ export class LogSyncService {
     const hasImportedCards = state.cards.some(
       (card) => card.sourceType === 'claude-code' || card.sourceType === 'codex' || card.sourceType === 'roo-code'
     );
+    const hasPersistedPrompts = this.parser.hasPersistedPrompts();
 
-    if (hasImportedCards || this.parser.hasPersistedPrompts()) {
+    if (!hasImportedCards && hasPersistedPrompts) {
+      this.parser.resetPersistedState();
+      this.initialImportInFlight = true;
+
+      try {
+        await this.bootstrapTodayImport();
+        await this.prepareHistoryBackfill();
+      } catch (error) {
+        logError('[LogSyncService] 清缓存后的首次导入失败，回退到普通同步', error);
+        await this.prepareHistoryBackfill();
+        await this.requestSync();
+      } finally {
+        this.initialImportInFlight = false;
+        if (this.syncQueued) {
+          this.syncQueued = false;
+          await this.requestSync();
+        }
+      }
+      return;
+    }
+
+    if (hasImportedCards || hasPersistedPrompts) {
       await this.prepareHistoryBackfill();
       await this.requestSync();
       return;
@@ -351,8 +399,10 @@ export class LogSyncService {
     const delay = Math.max(1000, nextMidnight.getTime() - now.getTime());
 
     this.midnightTimeoutId = setTimeout(() => {
-      // Pool handles its own midnight clear internally; trigger a sync + python scan
-      void this.requestSync()
+      // Pool handles its own midnight clear internally; rotate workspace cache first,
+      // then trigger a sync + python scan for the new day.
+      void this.repository.rotateTodayCards()
+        .then(() => this.requestSync())
         .then(() => this.runPythonScan())
         .finally(() => {
           this.scheduleMidnightSync();
@@ -426,9 +476,7 @@ export class LogSyncService {
   private async bootstrapTodayImport(): Promise<void> {
     const todayBucket = getTodayBucket();
     const runningSessions = this.parser.getRunningSessionsSnapshot();
-    const entries = this.parser
-      .discoverTodayOrRunningEntries(todayBucket, runningSessions)
-      .filter((entry) => entry.dateBucket === todayBucket);
+    const entries = this.collectForegroundEntries(todayBucket, runningSessions);
     let processedPrompts = 0;
     let processedSources = 0;
 
@@ -452,7 +500,7 @@ export class LogSyncService {
         todayBucket,
         skipRefresh: true,
         skipNotify: true
-      });
+      }, async (scanEntry) => this.parser.scanEntry(scanEntry).filter((prompt) => shouldIncludeTodayPrompt(prompt, todayBucket)));
       processedSources += 1;
       await this.publishHistoryImportProgress({
         scope: 'today-bootstrap',
@@ -725,13 +773,11 @@ export class LogSyncService {
           for (const id of autoCompletedIds) {
             const card = latestState.cards.find((c) => c.id === id);
             if (card) {
-              vscode.window.showInformationMessage(
-                localeText.host.notifications.promptAutoCompleted(card.title.slice(0, 30)),
-                localeText.host.viewAction
-              ).then((selection) => {
-                if (selection === localeText.host.viewAction) {
-                  vscode.commands.executeCommand('prompter.open');
-                }
+              await this.showRoutineToast({
+                id: `prompt-auto-completed:${card.id}`,
+                kind: 'success',
+                message: localeText.host.notifications.promptAutoCompleted(card.title.slice(0, 30)),
+                actionLabel: localeText.host.viewAction
               });
             }
           }
@@ -755,12 +801,10 @@ export class LogSyncService {
     const justCompletedSourceRefs = new Set<string>();
     const silentlyCompletedSourceRefs = new Set<string>();
 
-    const eligibleEntries = this.parser.discoverTodayOrRunningEntries(todayBucket, runningSessions);
+    const eligibleEntries = this.collectForegroundEntries(todayBucket, runningSessions);
 
     for (const entry of eligibleEntries) {
-      const prompts = this.parser.scanEntry(entry).filter(
-        (prompt) => toDateBucket(prompt.createdAt) === todayBucket
-      );
+      const prompts = this.parser.scanEntry(entry).filter((prompt) => shouldIncludeTodayPrompt(prompt, todayBucket));
       const result = this.parser.applySessionScan(prompts, runningSessions);
       inserted.push(...result.inserted);
       for (const sourceRef of result.justCompletedSourceRefs) {
@@ -776,6 +820,42 @@ export class LogSyncService {
       justCompletedSourceRefs: [...justCompletedSourceRefs],
       silentlyCompletedSourceRefs: [...silentlyCompletedSourceRefs]
     };
+  }
+
+  private collectForegroundEntries(todayBucket: string, runningSessions: Set<string>): LogSessionScanEntry[] {
+    const entries = this.parser.discoverTodayOrRunningEntries(todayBucket, runningSessions);
+    const merged = new Map<string, LogSessionScanEntry>(
+      entries.map((entry) => [`${entry.source}:${entry.path}`, entry] as const)
+    );
+
+    for (const entry of this.buildChangedFileEntriesFromWatchPool()) {
+      const entryKey = `${entry.source}:${entry.path}`;
+      if (merged.has(entryKey)) {
+        continue;
+      }
+
+      merged.set(entryKey, entry);
+      log(`[LogSyncService] forcing changed file into today sync — ${path.basename(entry.path)}`);
+    }
+
+    return [...merged.values()].sort((left, right) => right.lastModifiedMs - left.lastModifiedMs);
+  }
+
+  private buildChangedFileEntriesFromWatchPool(): LogSessionScanEntry[] {
+    if (!this.fileWatchPool) {
+      return [];
+    }
+
+    const snapshot = this.fileWatchPool.getPoolSnapshot() as WatchPoolSnapshotEntry[];
+    return snapshot
+      .filter((entry) => entry.path.endsWith('.jsonl'))
+      .map((entry) => ({
+        source: entry.source,
+        sessionId: path.basename(entry.path, '.jsonl'),
+        path: entry.path,
+        dateBucket: toLocalDateBucket(entry.lastMtimeMs || entry.lastChangedAt || Date.now()),
+        lastModifiedMs: entry.lastMtimeMs || entry.lastChangedAt || Date.now()
+      }));
   }
 
   private async reconcileStaleActiveCards(): Promise<void> {
@@ -818,13 +898,11 @@ export class LogSyncService {
 
       if (updatedState.settings.notifyOnFinish) {
         const localeText = getLocaleText(updatedState.settings.language);
-        vscode.window.showInformationMessage(
-          localeText.host.notifications.promptCompletedGeneric,
-          localeText.host.viewAction
-        ).then((selection) => {
-          if (selection === localeText.host.viewAction) {
-            vscode.commands.executeCommand('prompter.open');
-          }
+        await this.showRoutineToast({
+          id: `prompt-completed-generic:${Date.now()}`,
+          kind: 'success',
+          message: localeText.host.notifications.promptCompletedGeneric,
+          actionLabel: localeText.host.viewAction
         });
       }
     }
@@ -841,6 +919,21 @@ export class LogSyncService {
     if (BUILTIN_TONES.has(tone)) {
       PrompterPanel.playCompletionTone(tone as BuiltinTone);
     }
+  }
+
+  private async showRoutineToast(options: {
+    id: string;
+    kind: 'info' | 'success';
+    message: string;
+    actionLabel?: string;
+  }): Promise<void> {
+    await PrompterPanel.showToast({
+      id: options.id,
+      kind: options.kind,
+      message: options.message,
+      actionLabel: options.actionLabel,
+      actionCommand: options.actionLabel ? 'prompter.open' : undefined
+    });
   }
 
   private async updateActiveCardTimestamps(): Promise<void> {
@@ -892,7 +985,7 @@ export class LogSyncService {
     log(`[LogSyncService] 发现新 prompt: ${prompt.sessionId}`);
 
     const state = await this.repository.getState();
-    if (!options.foregroundOnly) {
+    if (!options.foregroundOnly || prompt.status === 'running') {
       await this.completePreviousSameSessionPrompts(state, prompt);
     }
 
@@ -912,13 +1005,11 @@ export class LogSyncService {
 
     if (!options.skipNotify && prompt.status === 'running') {
       const localeText = getLocaleText(state.settings.language);
-      vscode.window.showInformationMessage(
-        localeText.host.notifications.newRunningPrompt(card.title.slice(0, 30)),
-        localeText.host.viewAction
-      ).then((selection) => {
-        if (selection === localeText.host.viewAction) {
-          vscode.commands.executeCommand('prompter.open');
-        }
+      await this.showRoutineToast({
+        id: `prompt-running:${card.id}`,
+        kind: 'info',
+        message: localeText.host.notifications.newRunningPrompt(card.title.slice(0, 30)),
+        actionLabel: localeText.host.viewAction
       });
     }
   }
@@ -947,13 +1038,11 @@ export class LogSyncService {
     // 发送通知
     if (updatedState.settings.notifyOnFinish) {
       const localeText = getLocaleText(updatedState.settings.language);
-      vscode.window.showInformationMessage(
-        localeText.host.notifications.promptCompleted(card.title.slice(0, 30)),
-        localeText.host.viewAction
-      ).then((selection) => {
-        if (selection === localeText.host.viewAction) {
-          vscode.commands.executeCommand('prompter.open');
-        }
+      await this.showRoutineToast({
+        id: `prompt-completed:${card.id}`,
+        kind: 'success',
+        message: localeText.host.notifications.promptCompleted(card.title.slice(0, 30)),
+        actionLabel: localeText.host.viewAction
       });
     }
   }

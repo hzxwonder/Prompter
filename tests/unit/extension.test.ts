@@ -9,10 +9,14 @@ const mockedCreate = vi.fn();
 const registerCommand = vi.fn(() => ({ dispose() {} }));
 const registerWebviewViewProvider = vi.fn(() => ({ dispose() {} }));
 const executeCommand = vi.fn();
+const showInformationMessage = vi.fn();
+const showErrorMessage = vi.fn();
 const createOrShow = vi.fn();
 const postMessage = vi.fn();
+const syncUninstallDataDir = vi.fn().mockResolvedValue(undefined);
 let capturedKeybindingsPath: string | undefined;
 let currentAppName = 'Code';
+let currentLanguage = 'zh-cn';
 let currentActiveTextEditor: { document: { uri: { scheme: string; fsPath: string } } } | undefined;
 
 vi.mock('vscode', () => ({
@@ -20,6 +24,9 @@ vi.mock('vscode', () => ({
   env: {
     get appName() {
       return currentAppName;
+    },
+    get language() {
+      return currentLanguage;
     }
   },
   commands: {
@@ -30,6 +37,8 @@ vi.mock('vscode', () => ({
     get activeTextEditor() {
       return currentActiveTextEditor;
     },
+    showInformationMessage,
+    showErrorMessage,
     registerWebviewViewProvider,
     createOutputChannel: vi.fn(() => ({
       appendLine: vi.fn(),
@@ -85,51 +94,74 @@ vi.mock('../../src/state/PromptRepository', async () => {
   };
 });
 
+vi.mock('../../src/uninstall/uninstallCleanup', () => ({
+  syncUninstallDataDir
+}));
+
+function createTestContext(options?: { storedDataDir?: string; storedReloadPromptVersion?: string }) {
+  return {
+    extensionUri: {} as never,
+    extensionPath: '/tmp/prompter-extension',
+    extension: {
+      packageJSON: {
+        version: '1.2.3'
+      }
+    },
+    globalState: {
+      get: vi.fn((key: string) => {
+        if (key === 'prompter.lastReloadPromptVersion') {
+          return options?.storedReloadPromptVersion;
+        }
+
+        if (key === 'prompter.dataDir') {
+          return options?.storedDataDir ?? '/tmp/prompter-stored';
+        }
+
+        return undefined;
+      }),
+      update: vi.fn().mockResolvedValue(undefined)
+    },
+    subscriptions: [] as { dispose(): void }[]
+  };
+}
+
 describe('activate', () => {
   beforeEach(async () => {
     vi.resetModules();
     registerCommand.mockClear();
     registerWebviewViewProvider.mockClear();
     executeCommand.mockReset();
+    showInformationMessage.mockReset();
+    showErrorMessage.mockReset();
     createOrShow.mockReset();
     postMessage.mockReset();
+    syncUninstallDataDir.mockReset();
+    syncUninstallDataDir.mockResolvedValue(undefined);
     mockedCreate.mockReset();
     capturedKeybindingsPath = undefined;
     const actual = await vi.importActual<typeof import('../../src/state/PromptRepository')>('../../src/state/PromptRepository');
     mockedCreate.mockImplementation(actual.PromptRepository.create);
     currentAppName = 'Code';
+    currentLanguage = 'zh-cn';
     currentActiveTextEditor = undefined;
   });
 
   it('boots the repository from the persisted data directory in global state', async () => {
     const { activate } = await import('../../src/extension');
-    const context = {
-      extensionUri: {} as never,
-      extensionPath: '/tmp/prompter-extension',
-      globalState: {
-        get: vi.fn().mockReturnValue('/tmp/prompter-stored')
-      },
-      subscriptions: [] as { dispose(): void }[]
-    };
+    const context = createTestContext();
 
     await activate(context as never);
 
     expect(context.globalState.get).toHaveBeenCalledWith('prompter.dataDir');
     expect(mockedCreate).toHaveBeenCalledWith('/tmp/prompter-stored');
+    expect(syncUninstallDataDir).toHaveBeenCalledWith('/tmp/prompter-stored');
     expect(registerCommand).toHaveBeenCalledTimes(5);
     expect(registerWebviewViewProvider).toHaveBeenCalledWith('prompterSidebar', expect.any(Object));
   });
 
   it('passes shortcut application into import flows that open the shared panel', async () => {
     const { activate } = await import('../../src/extension');
-    const context = {
-      extensionUri: {} as never,
-      extensionPath: '/tmp/prompter-extension',
-      globalState: {
-        get: vi.fn().mockReturnValue('/tmp/prompter-stored')
-      },
-      subscriptions: [] as { dispose(): void }[]
-    };
+    const context = createTestContext();
 
     await activate(context as never);
 
@@ -153,14 +185,7 @@ describe('activate', () => {
     };
 
     const { activate } = await import('../../src/extension');
-    const context = {
-      extensionUri: {} as never,
-      extensionPath: '/tmp/prompter-extension',
-      globalState: {
-        get: vi.fn().mockReturnValue('/tmp/prompter-stored')
-      },
-      subscriptions: [] as { dispose(): void }[]
-    };
+    const context = createTestContext();
 
     await activate(context as never);
 
@@ -181,14 +206,7 @@ describe('activate', () => {
 
   it('imports folder paths from the explorer into the composer', async () => {
     const { activate } = await import('../../src/extension');
-    const context = {
-      extensionUri: {} as never,
-      extensionPath: '/tmp/prompter-extension',
-      globalState: {
-        get: vi.fn().mockReturnValue('/tmp/prompter-stored')
-      },
-      subscriptions: [] as { dispose(): void }[]
-    };
+    const context = createTestContext();
 
     await activate(context as never);
 
@@ -210,14 +228,7 @@ describe('activate', () => {
     currentAppName = 'Cursor';
 
     const { activate } = await import('../../src/extension');
-    const context = {
-      extensionUri: {} as never,
-      extensionPath: '/tmp/prompter-extension',
-      globalState: {
-        get: vi.fn().mockReturnValue('/tmp/prompter-stored')
-      },
-      subscriptions: [] as { dispose(): void }[]
-    };
+    const context = createTestContext();
 
     await activate(context as never);
 
@@ -261,15 +272,7 @@ describe('activate', () => {
     await writeFile(join(sourceDir, 'notes.txt'), 'do not migrate', 'utf8');
 
     const { activate } = await import('../../src/extension');
-    const context = {
-      extensionUri: {} as never,
-      extensionPath: '/tmp/prompter-extension',
-      globalState: {
-        get: vi.fn().mockReturnValue(sourceDir),
-        update: vi.fn().mockResolvedValue(undefined)
-      },
-      subscriptions: [] as { dispose(): void }[]
-    };
+    const context = createTestContext({ storedDataDir: sourceDir });
 
     await activate(context as never);
     const openCommandCall = ((registerCommand.mock.calls as unknown) as CommandRegistration[]).find(
@@ -285,5 +288,78 @@ describe('activate', () => {
     expect(await readFile(join(targetDir, 'modular-prompts.json'), 'utf8')).toContain('mod-1');
     expect(await readFile(join(targetDir, 'settings.json'), 'utf8')).toContain(targetDir);
     expect(await readdir(targetDir)).not.toContain('notes.txt');
+    expect(syncUninstallDataDir).toHaveBeenCalledWith(targetDir);
+  });
+
+  it('prompts for reload on first install and stores the current version', async () => {
+    const { activate } = await import('../../src/extension');
+    const context = createTestContext();
+
+    await activate(context as never);
+
+    expect(showInformationMessage).toHaveBeenCalledWith(
+      'Prompter 已安装或更新。请重新加载窗口以完成扩展启用。',
+      '重新加载'
+    );
+    expect(context.globalState.update).toHaveBeenCalledWith('prompter.lastReloadPromptVersion', '1.2.3');
+  });
+
+  it('prompts for reload after an upgrade', async () => {
+    const { activate } = await import('../../src/extension');
+    const context = createTestContext({ storedReloadPromptVersion: '1.2.2' });
+
+    await activate(context as never);
+
+    expect(showInformationMessage).toHaveBeenCalledTimes(1);
+    expect(context.globalState.update).toHaveBeenCalledWith('prompter.lastReloadPromptVersion', '1.2.3');
+  });
+
+  it('does not prompt again for the same version', async () => {
+    const { activate } = await import('../../src/extension');
+    const context = createTestContext({ storedReloadPromptVersion: '1.2.3' });
+
+    await activate(context as never);
+
+    expect(showInformationMessage).not.toHaveBeenCalled();
+    expect(context.globalState.update).not.toHaveBeenCalledWith('prompter.lastReloadPromptVersion', '1.2.3');
+  });
+
+  it('reloads the window when the user accepts the prompt', async () => {
+    showInformationMessage.mockResolvedValue('重新加载');
+
+    const { activate } = await import('../../src/extension');
+    const context = createTestContext();
+
+    await activate(context as never);
+
+    expect(executeCommand).toHaveBeenCalledWith('workbench.action.reloadWindow');
+  });
+
+  it('shows a Chinese recovery message when activation fails during install', async () => {
+    mockedCreate.mockRejectedValueOnce(new Error('corrupted cache'));
+    currentLanguage = 'zh-cn';
+
+    const { activate } = await import('../../src/extension');
+    const context = createTestContext();
+
+    await expect(activate(context as never)).rejects.toThrow('corrupted cache');
+
+    expect(showErrorMessage).toHaveBeenCalledWith(
+      'Prompter 扩展激活失败。请先打开设置页面，执行“缓存清理”，然后再重启 Cursor/VScode。'
+    );
+  });
+
+  it('shows an English recovery message when activation fails during install', async () => {
+    mockedCreate.mockRejectedValueOnce(new Error('corrupted cache'));
+    currentLanguage = 'en';
+
+    const { activate } = await import('../../src/extension');
+    const context = createTestContext();
+
+    await expect(activate(context as never)).rejects.toThrow('corrupted cache');
+
+    expect(showErrorMessage).toHaveBeenCalledWith(
+      'Prompter failed to activate. Open Settings, run "Clear Cache", and then restart Cursor/VS Code.'
+    );
   });
 });

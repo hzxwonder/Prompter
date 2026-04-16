@@ -1,10 +1,18 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExtensionContext } from 'vscode';
-import { createInitialState } from '../../../src/shared/models';
+import { createInitialState, toLocalDateBucket } from '../../../src/shared/models';
 import { LogSyncService } from '../../../src/services/LogSyncService';
 
 const { showInformationMessage } = vi.hoisted(() => ({
   showInformationMessage: vi.fn().mockResolvedValue(undefined)
+}));
+const { MockFileWatchPool } = vi.hoisted(() => ({
+  MockFileWatchPool: vi.fn().mockImplementation(() => ({
+    on: vi.fn(),
+    getPoolSnapshot: vi.fn(() => []),
+    start: vi.fn(),
+    stop: vi.fn()
+  }))
 }));
 
 vi.mock('vscode', () => ({
@@ -21,7 +29,8 @@ vi.mock('../../../src/panel/PrompterPanel', () => ({
     refresh: vi.fn().mockResolvedValue(undefined),
     syncHistoryImport: vi.fn().mockResolvedValue(undefined),
     playCompletionTone: vi.fn(),
-    playCustomTone: vi.fn()
+    playCustomTone: vi.fn(),
+    showToast: vi.fn().mockResolvedValue(true)
   }
 }));
 
@@ -29,11 +38,15 @@ vi.mock('../../../src/services/LogParser', () => ({
   LogParser: vi.fn().mockImplementation(function () {
     return {
       close: vi.fn(),
+      resetPersistedState: vi.fn(),
       sync: vi.fn(() => ({ inserted: [], justCompletedSourceRefs: [] })),
       getAllPrompts: vi.fn(() => []),
       getSessionLastModifiedMs: vi.fn(() => undefined),
+      getRunningSessionsSnapshot: vi.fn(() => new Set<string>()),
+      hasPersistedPrompts: vi.fn(() => false),
       discoverTodayOrRunningEntries: vi.fn(() => []),
       discoverScanEntries: vi.fn(() => []),
+      scanEntry: vi.fn(() => []),
       applySessionScan: vi.fn((prompts) => ({ inserted: prompts, justCompletedSourceRefs: [], silentlyCompletedSourceRefs: [] }))
     };
   })
@@ -44,9 +57,20 @@ vi.mock('../../../src/logger', () => ({
   logError: vi.fn()
 }));
 
+vi.mock('../../../src/services/FileWatchPool', () => ({
+  FileWatchPool: MockFileWatchPool
+}));
+
 describe('LogSyncService', () => {
   beforeEach(() => {
     showInformationMessage.mockClear();
+    showInformationMessage.mockResolvedValue(undefined);
+    MockFileWatchPool.mockClear();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('uses a fixed history worker count of 3', () => {
@@ -55,7 +79,7 @@ describe('LogSyncService', () => {
     expect((LogSyncService as any).resolveHistoryWorkerCount(2)).toBe(3);
   });
 
-  it('localizes completion notifications using the current settings language', async () => {
+  it('sends completion notifications through PrompterPanel.showToast instead of host info messages', async () => {
     const state = createInitialState('2026-04-08T10:00:00.000Z');
     state.settings.language = 'en';
     state.settings.notifyOnFinish = true;
@@ -85,10 +109,90 @@ describe('LogSyncService', () => {
     };
 
     const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const { PrompterPanel } = await import('../../../src/panel/PrompterPanel');
 
     await (service as any).handlePromptCompleted('session-1');
 
-    expect(showInformationMessage).toHaveBeenCalledWith('Prompt completed: Release wrap-up...', 'View');
+    expect(PrompterPanel.showToast).toHaveBeenCalledWith({
+      id: 'prompt-completed:card-1',
+      kind: 'success',
+      message: 'Prompt completed: Release wrap-up...',
+      actionLabel: 'View',
+      actionCommand: 'prompter.open'
+    });
+    expect(showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  it('plays the configured completion tone when a prompt finishes', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    state.settings.completionTone = 'chime';
+    state.settings.notifyOnFinish = true;
+    state.cards = [
+      {
+        id: 'card-1',
+        title: 'Release wrap-up',
+        content: 'Summarize the shipped changes.',
+        status: 'active',
+        runtimeState: 'running',
+        groupId: 'release',
+        groupName: 'release',
+        groupColor: '#22c55e',
+        sourceType: 'codex',
+        sourceRef: 'session-1',
+        createdAt: '2026-04-08T10:00:00.000Z',
+        updatedAt: '2026-04-08T10:00:00.000Z',
+        dateBucket: '2026-04-08',
+        fileRefs: [],
+        justCompleted: false
+      }
+    ];
+
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      markCardCompletedFromLog: vi.fn().mockResolvedValue(undefined)
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const { PrompterPanel } = await import('../../../src/panel/PrompterPanel');
+
+    await (service as any).handlePromptCompleted('session-1');
+
+    expect(PrompterPanel.playCompletionTone).toHaveBeenCalledWith('chime');
+  });
+
+  it('sends running prompt notifications through webview toasts', async () => {
+    const state = createInitialState('2026-04-08T10:30:00.000Z');
+    state.settings.language = 'zh-CN';
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      saveImportedCard: vi.fn().mockResolvedValue({
+        id: 'card-2',
+        title: '新 prompt',
+        sourceRef: 'session-1:turn-2'
+      })
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const { PrompterPanel } = await import('../../../src/panel/PrompterPanel');
+
+    await (service as any).handleNewPrompt({
+      source: 'codex',
+      sessionId: 'session-1',
+      sourceRef: 'session-1:turn-2',
+      project: 'session-1',
+      userInput: '新的输入',
+      createdAt: '2026-04-08T10:30:00.000Z',
+      status: 'running'
+    });
+
+    expect(PrompterPanel.showToast).toHaveBeenCalledWith({
+      id: 'prompt-running:card-2',
+      kind: 'info',
+      message: '发现新的运行中 prompt: 新 prompt...',
+      actionLabel: '查看',
+      actionCommand: 'prompter.open'
+    });
+    expect(showInformationMessage).not.toHaveBeenCalled();
   });
 
   it('auto-completes the previous active prompt when a new prompt arrives in the same codex session', async () => {
@@ -252,7 +356,7 @@ describe('LogSyncService', () => {
 
   it('bootstraps today import via lightweight today/running discovery', async () => {
     const state = createInitialState('2026-04-08T10:00:00.000Z');
-    const todayBucket = new Date().toISOString().slice(0, 10);
+    const todayBucket = toLocalDateBucket(new Date());
     const repository = {
       getState: vi.fn().mockResolvedValue(state),
       setHistoryImport: vi.fn().mockResolvedValue(undefined),
@@ -288,6 +392,215 @@ describe('LogSyncService', () => {
 
     expect(parser.discoverTodayOrRunningEntries).toHaveBeenCalledWith(todayBucket, expect.any(Set));
     expect(repository.saveImportedCards).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the local calendar day for today bootstrap shortly after midnight', async () => {
+    const previousTz = process.env.TZ;
+    process.env.TZ = 'Asia/Shanghai';
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-16T16:10:00.000Z'));
+
+    const state = createInitialState('2026-04-17T00:10:00.000+08:00');
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      setHistoryImport: vi.fn().mockResolvedValue(undefined),
+      saveImportedCards: vi.fn().mockResolvedValue([])
+    };
+
+    try {
+      const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+      const parser = (service as any).parser;
+      parser.getRunningSessionsSnapshot = vi.fn(() => new Set<string>());
+      parser.discoverTodayOrRunningEntries = vi.fn(() => []);
+
+      await (service as any).bootstrapTodayImport();
+
+      expect(parser.discoverTodayOrRunningEntries).toHaveBeenCalledWith('2026-04-17', expect.any(Set));
+    } finally {
+      vi.useRealTimers();
+      process.env.TZ = previousTz;
+    }
+  });
+
+  it('bootstraps today import from watched changed files even when lightweight discovery misses an old-date codex session', async () => {
+    const previousTz = process.env.TZ;
+    process.env.TZ = 'Asia/Shanghai';
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-16T16:45:00.000Z'));
+
+    const state = createInitialState('2026-04-17T00:45:00.000+08:00');
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      setHistoryImport: vi.fn().mockResolvedValue(undefined),
+      saveImportedCards: vi.fn().mockResolvedValue([])
+    };
+
+    try {
+      const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+      const parser = (service as any).parser;
+      parser.getRunningSessionsSnapshot = vi.fn(() => new Set<string>());
+      parser.discoverTodayOrRunningEntries = vi.fn(() => []);
+      parser.scanEntry = vi.fn(() => [
+        {
+          source: 'codex',
+          sessionId: 'rollout-2026-04-16T15-47-15-019d9542-2e51-7a90-b2ee-ed1cc93f4f4c',
+          sourceRef: 'rollout-2026-04-16T15-47-15-019d9542-2e51-7a90-b2ee-ed1cc93f4f4c:turn-old',
+          project: 'rollout-2026-04-16T15-47-15-019d9542-2e51-7a90-b2ee-ed1cc93f4f4c',
+          userInput: 'Old day prompt',
+          createdAt: '2026-04-16T07:49:04.500Z',
+          status: 'completed'
+        },
+        {
+          source: 'codex',
+          sessionId: 'rollout-2026-04-16T15-47-15-019d9542-2e51-7a90-b2ee-ed1cc93f4f4c',
+          sourceRef: 'rollout-2026-04-16T15-47-15-019d9542-2e51-7a90-b2ee-ed1cc93f4f4c:turn-today',
+          project: 'rollout-2026-04-16T15-47-15-019d9542-2e51-7a90-b2ee-ed1cc93f4f4c',
+          userInput: 'Today prompt from a watched changed file',
+          createdAt: '2026-04-16T16:41:21.546Z',
+          status: 'running'
+        }
+      ]);
+      parser.applySessionScan = vi.fn((prompts) => ({ inserted: prompts }));
+      (service as any).fileWatchPool = {
+        getPoolSnapshot: vi.fn(() => [
+          {
+            path: '/Users/test/.codex/sessions/2026/04/16/rollout-2026-04-16T15-47-15-019d9542-2e51-7a90-b2ee-ed1cc93f4f4c.jsonl',
+            source: 'codex',
+            lastSize: 1,
+            lastMtimeMs: Date.parse('2026-04-16T16:43:29.000Z'),
+            lastChangedAt: Date.parse('2026-04-16T16:43:29.000Z')
+          }
+        ])
+      };
+
+      await (service as any).bootstrapTodayImport();
+
+      expect(parser.discoverTodayOrRunningEntries).toHaveBeenCalledWith('2026-04-17', expect.any(Set));
+      expect(parser.scanEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: '/Users/test/.codex/sessions/2026/04/16/rollout-2026-04-16T15-47-15-019d9542-2e51-7a90-b2ee-ed1cc93f4f4c.jsonl',
+          source: 'codex'
+        })
+      );
+      expect(repository.saveImportedCards).toHaveBeenCalledWith([
+        expect.objectContaining({
+          sourceRef: 'rollout-2026-04-16T15-47-15-019d9542-2e51-7a90-b2ee-ed1cc93f4f4c:turn-today',
+          status: 'active'
+        })
+      ]);
+    } finally {
+      vi.useRealTimers();
+      process.env.TZ = previousTz;
+    }
+  });
+
+  it('reparses watched changed files during foreground sync and keeps only prompts from the local current day', () => {
+    const previousTz = process.env.TZ;
+    process.env.TZ = 'Asia/Shanghai';
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-16T16:45:00.000Z'));
+
+    try {
+      const state = createInitialState('2026-04-17T00:45:00.000+08:00');
+      const service = new LogSyncService({ getState: vi.fn().mockResolvedValue(state) } as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+      const parser = (service as any).parser;
+      parser.getRunningSessionsSnapshot = vi.fn(() => new Set<string>());
+      parser.discoverTodayOrRunningEntries = vi.fn(() => []);
+      parser.scanEntry = vi.fn(() => [
+        {
+          source: 'codex',
+          sessionId: 'cross-day-session',
+          sourceRef: 'cross-day-session:turn-old',
+          project: 'cross-day-session',
+          userInput: 'Yesterday prompt',
+          createdAt: '2026-04-16T07:49:04.500Z',
+          status: 'completed'
+        },
+        {
+          source: 'codex',
+          sessionId: 'cross-day-session',
+          sourceRef: 'cross-day-session:turn-today',
+          project: 'cross-day-session',
+          userInput: 'Today prompt',
+          createdAt: '2026-04-16T16:41:21.546Z',
+          status: 'running'
+        }
+      ]);
+      parser.applySessionScan = vi.fn((prompts) => ({ inserted: prompts, justCompletedSourceRefs: [], silentlyCompletedSourceRefs: [] }));
+      (service as any).fileWatchPool = {
+        getPoolSnapshot: vi.fn(() => [
+          {
+            path: '/Users/test/.codex/sessions/2026/04/16/cross-day-session.jsonl',
+            source: 'codex',
+            lastSize: 1,
+            lastMtimeMs: Date.parse('2026-04-16T16:43:29.000Z'),
+            lastChangedAt: Date.parse('2026-04-16T16:43:29.000Z')
+          }
+        ])
+      };
+
+      const result = (service as any).syncForegroundSessionsOnly();
+
+      expect(result.inserted).toEqual([
+        expect.objectContaining({
+          sourceRef: 'cross-day-session:turn-today',
+          userInput: 'Today prompt'
+        })
+      ]);
+      expect(result.inserted).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ sourceRef: 'cross-day-session:turn-old' })])
+      );
+    } finally {
+      vi.useRealTimers();
+      process.env.TZ = previousTz;
+    }
+  });
+
+  it('uses the persisted watch-pool path when bootstrapping file watching', () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state)
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    vi.spyOn(service as any, 'startInitialImportIfNeeded').mockResolvedValue(undefined);
+    vi.spyOn(service as any, 'scheduleMidnightSync').mockImplementation(() => {});
+    vi.spyOn(globalThis, 'setInterval').mockReturnValue({} as never);
+
+    service.start();
+
+    expect(MockFileWatchPool).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.stringMatching(/watch-pool\.json$/)
+    );
+  });
+
+  it('rotates today cards at midnight before running sync', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      rotateTodayCards: vi.fn().mockResolvedValue(undefined)
+    };
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const requestSyncSpy = vi.spyOn(service as any, 'requestSync').mockResolvedValue(undefined);
+    const runPythonScanSpy = vi.spyOn(service as any, 'runPythonScan').mockResolvedValue(undefined);
+
+    let scheduledCallback: (() => void) | undefined;
+    setTimeoutSpy.mockImplementation((((callback: TimerHandler) => {
+      scheduledCallback = callback as () => void;
+      return {} as never;
+    }) as unknown) as typeof setTimeout);
+
+    (service as any).scheduleMidnightSync();
+    scheduledCallback?.();
+    for (let i = 0; i < 8; i += 1) {
+      await Promise.resolve();
+    }
+
+    expect(repository.rotateTodayCards).toHaveBeenCalledTimes(1);
+    expect(requestSyncSpy).toHaveBeenCalledTimes(1);
+    expect(runPythonScanSpy).toHaveBeenCalledTimes(1);
   });
 
   it('settles older same-session prompts even when they are imported together in one batch', async () => {
@@ -383,7 +696,7 @@ describe('LogSyncService', () => {
 
   it('prepares historical backfill without executing it during activation', async () => {
     const state = createInitialState('2026-04-08T10:00:00.000Z');
-    const todayBucket = new Date().toISOString().slice(0, 10);
+    const todayBucket = toLocalDateBucket(new Date());
 
     const repository = {
       getState: vi.fn().mockResolvedValue(state),
@@ -441,7 +754,7 @@ describe('LogSyncService', () => {
       expect.objectContaining({
         scope: 'history-backfill',
         status: 'idle',
-        pendingEntries: [
+        pendingEntries: expect.arrayContaining([
           {
             id: 'codex:/tmp/old.jsonl',
             sourceType: 'codex',
@@ -449,14 +762,61 @@ describe('LogSyncService', () => {
             dateBucket: '2026-04-07',
             lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
           }
-        ]
+        ])
       })
     );
   });
 
+  it('resets stale parser state and rehydrates today prompts when cache is empty', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    const todayBucket = toLocalDateBucket(new Date());
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      setHistoryImport: vi.fn().mockResolvedValue(undefined),
+      saveImportedCards: vi.fn().mockResolvedValue([])
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const parser = (service as any).parser;
+    parser.hasPersistedPrompts = vi.fn(() => true);
+    parser.resetPersistedState = vi.fn();
+    parser.discoverTodayOrRunningEntries = vi.fn(() => [
+      {
+        source: 'codex',
+        sessionId: 'today-session',
+        path: '/tmp/today.jsonl',
+        dateBucket: '2026-04-01',
+        lastModifiedMs: Date.parse(`${todayBucket}T10:00:00.000Z`)
+      }
+    ]);
+    parser.discoverScanEntries = vi.fn(() => []);
+    parser.scanEntry = vi.fn(() => [
+      {
+        source: 'codex',
+        sessionId: 'today-session',
+        sourceRef: 'today-session:turn-1',
+        project: 'today-session',
+        userInput: 'Rehydrate today after clearing cache.',
+        createdAt: `${todayBucket}T10:00:00.000Z`,
+        status: 'running'
+      }
+    ]);
+    parser.applySessionScan = vi.fn((prompts) => ({ inserted: prompts }));
+
+    await (service as any).startInitialImportIfNeeded();
+
+    expect(parser.resetPersistedState).toHaveBeenCalledTimes(1);
+    expect(repository.saveImportedCards).toHaveBeenCalledWith([
+      expect.objectContaining({
+        sourceRef: 'today-session:turn-1',
+        content: 'Rehydrate today after clearing cache.'
+      })
+    ]);
+  });
+
   it('imports only today prompts and unfinished prompts from running old sessions while backfill is still pending', async () => {
     const state = createInitialState('2026-04-08T10:00:00.000Z');
-    const todayBucket = new Date().toISOString().slice(0, 10);
+    const todayBucket = toLocalDateBucket(new Date());
     state.historyImport = {
       ...state.historyImport,
       scope: 'history-backfill',
@@ -547,9 +907,97 @@ describe('LogSyncService', () => {
     );
   });
 
+  it('still auto-acknowledges completed same-session prompts during foreground-only sync while backfill is pending', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    const todayBucket = toLocalDateBucket(new Date());
+    state.historyImport = {
+      ...state.historyImport,
+      scope: 'history-backfill',
+      status: 'idle',
+      foregroundReady: true,
+      pendingEntries: [
+        {
+          id: 'codex:/tmp/history.jsonl',
+          sourceType: 'codex',
+          filePath: '/tmp/history.jsonl',
+          dateBucket: '2026-04-07',
+          lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
+        }
+      ],
+      completedEntries: []
+    };
+    state.cards = [
+      {
+        id: 'card-1',
+        title: 'Previous prompt',
+        content: 'Hello!',
+        status: 'completed',
+        runtimeState: 'finished',
+        groupId: 'codex:session-1',
+        groupName: 'session-1',
+        groupColor: '#22c55e',
+        sourceType: 'codex',
+        sourceRef: 'session-1:turn-1',
+        createdAt: `${todayBucket}T09:50:00.000Z`,
+        updatedAt: `${todayBucket}T10:00:00.000Z`,
+        completedAt: `${todayBucket}T10:00:00.000Z`,
+        dateBucket: todayBucket,
+        fileRefs: [],
+        justCompleted: true
+      }
+    ];
+
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      saveImportedCard: vi.fn().mockResolvedValue({
+        id: 'card-2',
+        title: 'Imported prompt'
+      }),
+      acknowledgeCompletion: vi.fn().mockResolvedValue(undefined),
+      autoCompleteExpiredActiveCards: vi.fn().mockResolvedValue([]),
+      updateCardLastActiveAt: vi.fn().mockResolvedValue(undefined)
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const parser = (service as any).parser;
+    parser.discoverTodayOrRunningEntries = vi.fn(() => [{
+      source: 'codex',
+      sessionId: 'session-1',
+      path: '/tmp/session-1.jsonl',
+      dateBucket: '2026-04-07',
+      lastModifiedMs: Date.parse(`${todayBucket}T10:10:00.000Z`)
+    }]);
+    parser.getRunningSessionsSnapshot = vi.fn(() => new Set<string>(['codex:session-1']));
+    parser.scanEntry = vi.fn(() => [
+      {
+        source: 'codex',
+        sessionId: 'session-1',
+        sourceRef: 'session-1:turn-2',
+        project: 'session-1',
+        userInput: 'New prompt in same session',
+        createdAt: `${todayBucket}T10:10:00.000Z`,
+        status: 'running'
+      }
+    ]);
+    parser.applySessionScan = vi.fn((prompts) => ({
+      inserted: prompts,
+      justCompletedSourceRefs: [],
+      silentlyCompletedSourceRefs: []
+    }));
+
+    await (service as any).sync();
+
+    expect(repository.acknowledgeCompletion).toHaveBeenCalledWith('card-1');
+    expect(repository.saveImportedCard).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceRef: 'session-1:turn-2'
+      })
+    );
+  });
+
   it('avoids full parser sync during normal incremental sync and uses lightweight discovery instead', async () => {
     const state = createInitialState('2026-04-08T10:00:00.000Z');
-    const todayBucket = new Date().toISOString().slice(0, 10);
+    const todayBucket = toLocalDateBucket(new Date());
     const repository = {
       getState: vi.fn().mockResolvedValue(state),
       saveImportedCard: vi.fn().mockResolvedValue({
@@ -725,6 +1173,126 @@ describe('LogSyncService', () => {
         lastModifiedMs: Date.parse('2026-04-01T10:00:00.000Z')
       }
     ]);
+  });
+
+  it('queues recently modified old sessions for history backfill even when their session bucket is older than 30 days', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    const repositoryState = structuredClone(state);
+    const repository = {
+      getState: vi.fn(async () => repositoryState),
+      setHistoryImport: vi.fn(async (nextHistoryImport) => {
+        repositoryState.historyImport = {
+          ...repositoryState.historyImport,
+          ...nextHistoryImport
+        };
+      })
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const parser = (service as any).parser;
+    parser.discoverScanEntries = vi.fn(() => [
+      {
+        source: 'codex',
+        sessionId: 'recently-active-old-session',
+        path: '/tmp/old-session.jsonl',
+        dateBucket: '2026-02-20',
+        lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
+      }
+    ]);
+
+    await (service as any).prepareHistoryBackfill();
+
+    expect(repositoryState.historyImport.pendingEntries).toEqual([
+      {
+        id: 'codex:/tmp/old-session.jsonl',
+        sourceType: 'codex',
+        filePath: '/tmp/old-session.jsonl',
+        dateBucket: '2026-02-20',
+        lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
+      }
+    ]);
+  });
+
+  it('imports recent historical prompts from sessions that are still being modified today', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    state.historyImport = {
+      ...state.historyImport,
+      scope: 'history-backfill',
+      status: 'idle',
+      foregroundReady: true,
+      pendingEntries: [
+        {
+          id: 'codex:/tmp/old-session.jsonl',
+          sourceType: 'codex',
+          filePath: '/tmp/old-session.jsonl',
+          dateBucket: '2026-02-20',
+          lastModifiedMs: Date.parse(`${toLocalDateBucket(new Date())}T10:00:00.000Z`)
+        }
+      ],
+      completedEntries: [],
+      completedEntryMtims: {}
+    };
+
+    const repositoryState = structuredClone(state);
+    const repository = {
+      getState: vi.fn(async () => repositoryState),
+      setHistoryImport: vi.fn(async (nextHistoryImport) => {
+        repositoryState.historyImport = {
+          ...repositoryState.historyImport,
+          ...nextHistoryImport
+        };
+      }),
+      saveImportedCards: vi.fn().mockResolvedValue([])
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const parser = (service as any).parser;
+    parser.discoverScanEntries = vi.fn(() => [
+      {
+        source: 'codex',
+        sessionId: 'old-session',
+        path: '/tmp/old-session.jsonl',
+        dateBucket: '2026-02-20',
+        lastModifiedMs: Date.parse(`${toLocalDateBucket(new Date())}T10:00:00.000Z`)
+      }
+    ]);
+    parser.scanEntry = vi.fn(() => [
+      {
+        source: 'codex',
+        sessionId: 'old-session',
+        sourceRef: 'old-session:turn-1',
+        project: 'old-session',
+        userInput: 'Prompt from earlier this month.',
+        createdAt: '2026-04-07T09:00:00.000Z',
+        status: 'completed'
+      },
+      {
+        source: 'codex',
+        sessionId: 'old-session',
+        sourceRef: 'old-session:turn-2',
+        project: 'old-session',
+        userInput: 'Prompt from today should stay in foreground sync.',
+        createdAt: `${toLocalDateBucket(new Date())}T10:00:00.000Z`,
+        status: 'running'
+      }
+    ]);
+    parser.applySessionScan = vi.fn((prompts) => ({ inserted: prompts }));
+
+    await service.runHistoryBackfill();
+
+    expect(repository.saveImportedCards).toHaveBeenCalledWith([
+      expect.objectContaining({
+        sourceRef: 'old-session:turn-1',
+        content: 'Prompt from earlier this month.'
+      })
+    ]);
+    expect(repository.saveImportedCards).not.toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceRef: 'old-session:turn-2'
+        })
+      ])
+    );
   });
 
   it('throttles history import progress syncs while backfill is running', async () => {

@@ -10,9 +10,11 @@ import { KeybindingService } from './services/KeybindingService';
 import { PromptRepository } from './state/PromptRepository';
 import { LogSyncService } from './services/LogSyncService';
 import { log, logError, showOutputChannel } from './logger';
+import { syncUninstallDataDir } from './uninstall/uninstallCleanup';
 import { PrompterSidebarViewProvider } from './views/PrompterSidebarViewProvider';
 
 const DATA_DIR_KEY = 'prompter.dataDir';
+const RELOAD_PROMPT_VERSION_KEY = 'prompter.lastReloadPromptVersion';
 const REPOSITORY_FILE_NAMES = ['cards.json', 'modular-prompts.json', 'daily-stats.json', 'settings.json', 'session-groups.json'] as const;
 
 let logSyncService: LogSyncService | null = null;
@@ -23,8 +25,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   log(`Extension path: ${context.extensionPath}`);
 
   try {
+    await maybePromptReloadAfterInstallOrUpgrade(context);
+
     const dataDir = resolveDataDir(context);
     log(`Data directory: ${dataDir}`);
+    await syncUninstallDataDir(dataDir);
 
     let repository = await PromptRepository.create(dataDir);
     log('Repository created successfully');
@@ -45,6 +50,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const nextRepository = await PromptRepository.create(request.targetDir);
       await nextRepository.updateSettings({ dataDir: request.targetDir });
       await context.globalState.update(DATA_DIR_KEY, request.targetDir);
+      await syncUninstallDataDir(request.targetDir);
       repository = nextRepository;
       return nextRepository.getState();
     };
@@ -173,9 +179,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     logError('Failed to activate extension', error);
     showOutputChannel();
     vscode.window.showErrorMessage(
-      getLocaleText('zh-CN').host.errors.activateFailed
+      getLocaleText(resolveHostLanguage()).host.errors.activateFailedRecovery
     );
     throw error;
+  }
+}
+
+async function maybePromptReloadAfterInstallOrUpgrade(context: vscode.ExtensionContext): Promise<void> {
+  const currentVersion = context.extension.packageJSON.version as string | undefined;
+  const promptedVersion = context.globalState.get<string>(RELOAD_PROMPT_VERSION_KEY);
+
+  if (!currentVersion || promptedVersion === currentVersion) {
+    return;
+  }
+
+  await context.globalState.update(RELOAD_PROMPT_VERSION_KEY, currentVersion);
+  const localeText = getLocaleText(resolveHostLanguage()).host;
+
+  const selection = await vscode.window.showInformationMessage(
+    localeText.notifications.reloadAfterInstallOrUpgrade,
+    localeText.reloadAction
+  );
+
+  if (selection === localeText.reloadAction) {
+    await vscode.commands.executeCommand('workbench.action.reloadWindow');
+  }
+}
+
+function resolveHostLanguage(): 'zh-CN' | 'en' {
+  try {
+    return vscode.env.language?.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en';
+  } catch {
+    return 'en';
   }
 }
 

@@ -117,7 +117,7 @@ const text = {
       logPath: (source: string) => `${source} 日志路径`,
       cacheHeading: '缓存',
       cacheSubtitle: '清除当前工作区的缓存 prompt 数据和导入状态。',
-      clearCache: '清空缓存'
+      clearCache: '缓存清理'
     },
     history: {
       empty: '还没有 prompt 活动记录。',
@@ -176,16 +176,24 @@ const text = {
     },
     host: {
       viewAction: '查看',
+      reloadAction: '重新加载',
       notifications: {
+        reloadAfterInstallOrUpgrade: 'Prompter 已安装或更新。请重新加载窗口以完成扩展启用。',
         promptAutoCompleted: (title: string) => `Prompt 已自动完成: ${title}...`,
         promptCompleted: (title: string) => `Prompt 已完成: ${title}...`,
         promptCompletedGeneric: 'Prompt 已完成',
         newRunningPrompt: (title: string) => `发现新的运行中 prompt: ${title}...`
       },
+      confirmations: {
+        clearCacheMessage: '是否确认清理 Prompter 缓存？此操作会移除当前工作区中的缓存 prompt 数据和导入状态。',
+        clearCacheConfirm: '确认清理',
+        cancel: '取消'
+      },
       errors: {
         openPanelFailed: 'Prompter: 打开面板失败，详情请查看输出面板',
         importSelectionFailed: 'Prompter: 导入选区失败，详情请查看输出面板',
         activateFailed: 'Prompter 扩展激活失败，详情请查看 "输出" 面板 → Prompter',
+        activateFailedRecovery: 'Prompter 扩展激活失败。请先打开设置页面，执行“缓存清理”，然后再重启 Cursor/VScode。',
         jumpToSourceFailed: (sourceType: string) => `无法跳转到 ${sourceType} 会话`,
         shortcutUnavailable: '当前面板不支持修改快捷键',
         shortcutRollbackFailed: (message?: string) =>
@@ -283,7 +291,7 @@ const text = {
       logPath: (source: string) => `${source} log path`,
       cacheHeading: 'Cache',
       cacheSubtitle: 'Remove cached prompt data and imported state from the local workspace.',
-      clearCache: 'Clear cache'
+      clearCache: 'Clear Cache'
     },
     history: {
       empty: 'No prompt activity yet.',
@@ -342,16 +350,24 @@ const text = {
     },
     host: {
       viewAction: 'View',
+      reloadAction: 'Reload',
       notifications: {
+        reloadAfterInstallOrUpgrade: 'Prompter was installed or updated. Reload the window to finish enabling the extension.',
         promptAutoCompleted: (title: string) => `Prompt auto-completed: ${title}...`,
         promptCompleted: (title: string) => `Prompt completed: ${title}...`,
         promptCompletedGeneric: 'Prompt completed',
         newRunningPrompt: (title: string) => `New running prompt detected: ${title}...`
       },
+      confirmations: {
+        clearCacheMessage: 'Clear the Prompter cache? This removes cached prompt data and imported state from the current workspace.',
+        clearCacheConfirm: 'Clear Cache',
+        cancel: 'Cancel'
+      },
       errors: {
         openPanelFailed: 'Prompter: failed to open the panel. Check the output panel for details.',
         importSelectionFailed: 'Prompter: failed to import the selection. Check the output panel for details.',
         activateFailed: 'Prompter failed to activate. Check the "Output" panel → Prompter for details.',
+        activateFailedRecovery: 'Prompter failed to activate. Open Settings, run "Clear Cache", and then restart Cursor/VS Code.',
         jumpToSourceFailed: (sourceType: string) => `Unable to jump to the ${sourceType} session`,
         shortcutUnavailable: 'Shortcut updates are unavailable in this panel',
         shortcutRollbackFailed: (message?: string) =>

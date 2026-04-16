@@ -79,6 +79,70 @@ select {
   overflow: auto;
 }
 
+.toast-viewport {
+  position: fixed;
+  left: 1rem;
+  bottom: 1rem;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  pointer-events: none;
+}
+
+.toast {
+  min-width: 190px;
+  max-width: min(250px, calc(100vw - 2rem));
+  border-radius: 0.65rem;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  background: color-mix(in srgb, var(--vscode-editorWidget-background, #252526) 92%, transparent);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.2);
+  pointer-events: auto;
+}
+
+.toast--info {
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+.toast--success {
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.toast__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.42rem;
+  padding: 0.55rem 0.65rem;
+}
+
+.toast__message {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+
+.toast__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.28rem;
+  flex-wrap: wrap;
+}
+
+.toast__button {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  padding: 0.18rem 0.46rem;
+  font-size: 0.7rem;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.toast__button--ghost {
+  background: transparent;
+}
+
 .content h1,
 .content h2 {
   margin: 0;
@@ -1614,25 +1678,67 @@ select {
 
 .settings-danger-zone {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
   gap: 1rem;
-  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
-  padding-top: 1rem;
+  border: 1px solid rgba(185, 28, 28, 0.22);
+  border-radius: 0.85rem;
+  padding: 0.95rem 1rem;
+  background:
+    linear-gradient(135deg, rgba(127, 29, 29, 0.14), rgba(69, 10, 10, 0.06)),
+    var(--vscode-editor-background, rgba(0, 0, 0, 0.12));
+}
+
+.settings-danger-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
 }
 
 .settings-danger-zone h3 {
   margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--vscode-editor-foreground, #f3f3f3) 92%, #fca5a5 8%);
+}
+
+.settings-danger-zone p {
+  margin: 0;
+  max-width: 36rem;
+  color: var(--vscode-descriptionForeground, rgba(255, 255, 255, 0.68));
+  font-size: 0.82rem;
+  line-height: 1.45;
 }
 
 .settings-danger-button {
-  border: 1px solid var(--vscode-button-border, transparent);
+  border: 1px solid rgba(248, 113, 113, 0.32);
   border-radius: 0.65rem;
-  background: var(--vscode-button-secondaryBackground, rgba(255, 255, 255, 0.08));
-  color: var(--vscode-button-secondaryForeground, inherit);
-  padding: 0.75rem 1rem;
+  background:
+    linear-gradient(180deg, rgba(153, 27, 27, 0.92), rgba(127, 29, 29, 0.94));
+  color: #fee2e2;
+  padding: 0.68rem 1rem;
+  min-width: 132px;
+  font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, filter 0.15s ease;
+}
+
+.settings-danger-button:hover {
+  border-color: rgba(252, 165, 165, 0.44);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 8px 20px rgba(69, 10, 10, 0.22);
+  filter: brightness(1.04);
+}
+
+.settings-danger-button:active {
+  transform: translateY(1px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.settings-danger-button:focus-visible {
+  outline: 2px solid rgba(248, 113, 113, 0.45);
+  outline-offset: 2px;
 }
 
 @media (max-width: 768px) {
@@ -1667,5 +1773,9 @@ select {
   .settings-danger-zone {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .settings-danger-button {
+    width: 100%;
   }
 }

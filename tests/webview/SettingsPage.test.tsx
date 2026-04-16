@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
@@ -5,6 +6,10 @@ import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
 import { SettingsPage } from '../../webview/src/pages/SettingsPage';
 import { createInitialState, type PrompterSettings } from '../../src/shared/models';
+
+vi.mock('../../webview/src/api/vscode', () => ({
+  postMessage: vi.fn()
+}));
 
 const createSettings = (): PrompterSettings => ({
   ...createInitialState('2026-04-08T10:00:00.000Z').settings,
@@ -51,7 +56,8 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('checkbox', { name: '启用 codex 日志' })).not.toBeChecked();
     expect(screen.getByLabelText('codex 日志路径')).toHaveValue('~/Library/Logs/Codex');
     expect(screen.queryByRole('checkbox', { name: '启用 roo-code 日志' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '清空缓存' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '缓存' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '缓存清理' })).toBeInTheDocument();
   });
 
   it('switches settings copy to English when English is selected', () => {
@@ -73,7 +79,8 @@ describe('SettingsPage', () => {
     expect(screen.queryByLabelText('Default import mode')).not.toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: 'Notify when a prompt pauses' })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Enable claude-code logs' })).toBeChecked();
-    expect(screen.queryByRole('button', { name: 'Clear cache' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Cache' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Clear Cache' })).toBeInTheDocument();
   });
 
   it('reveals staged data-directory apply controls and only switches after apply', async () => {

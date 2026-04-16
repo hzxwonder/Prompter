@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { createInitialState, toDateBucket } from '../../../src/shared/models';
+import { createInitialState, toDateBucket, toLocalDateBucket } from '../../../src/shared/models';
 
 describe('createInitialState', () => {
   it('starts on workspace with scaffold defaults', () => {
@@ -8,6 +8,7 @@ describe('createInitialState', () => {
 
     expect(state.activeView).toBe('workspace');
     expect(state.cards).toEqual([]);
+    expect(state.workspaceCards).toEqual([]);
     expect(state.modularPrompts).toEqual([]);
     expect(state.selectedDate).toBe('2026-04-08');
     expect(state.settings.dataDir).toBe('~/prompter');
@@ -119,5 +120,17 @@ describe('createInitialState', () => {
     ].join('-');
 
     expect(toDateBucket(timestamp)).toBe(expected);
+  });
+
+  it('builds local date buckets directly from Date instances and epoch timestamps', () => {
+    const timestamp = new Date('2026-04-16T16:10:00.000Z');
+    const expected = [
+      timestamp.getFullYear(),
+      String(timestamp.getMonth() + 1).padStart(2, '0'),
+      String(timestamp.getDate()).padStart(2, '0')
+    ].join('-');
+
+    expect(toLocalDateBucket(timestamp)).toBe(expected);
+    expect(toLocalDateBucket(timestamp.getTime())).toBe(expected);
   });
 });

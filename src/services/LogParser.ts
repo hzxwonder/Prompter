@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { homedir } from 'node:os';
 import { log, logError } from '../logger';
 import { sanitizeImportedPromptContent, shouldDiscardImportedPromptContent } from '../shared/promptSanitization';
+import { toLocalDateBucket } from '../shared/models';
 
 export interface LogPrompt {
   source: 'claude-code' | 'codex' | 'roo-code';
@@ -503,7 +504,7 @@ export function resolvePromptStatuses(
 }
 
 function toDateBucketFromMs(timestampMs: number): string {
-  return new Date(timestampMs).toISOString().slice(0, 10);
+  return toLocalDateBucket(timestampMs);
 }
 
 function isSessionMarkedRunning(runningSessions: Set<string>, source: LogPrompt['source'], sessionId: string): boolean {
@@ -522,6 +523,12 @@ export class LogParser {
 
   hasPersistedPrompts(): boolean {
     return this.state.prompts.length > 0;
+  }
+
+  resetPersistedState(): void {
+    this.state = { prompts: [] };
+    this.sessionLastModified.clear();
+    this.saveState();
   }
 
   getSessionLastModifiedMs(source: LogPrompt['source'], sid: string): number | undefined {
@@ -808,7 +815,7 @@ export class LogParser {
               source: 'claude-code',
               sessionId: path.basename(file, '.jsonl'),
               path: filePath,
-              dateBucket: new Date(stat.mtimeMs).toISOString().slice(0, 10),
+              dateBucket: toDateBucketFromMs(stat.mtimeMs),
               lastModifiedMs: stat.mtimeMs
             });
           }
@@ -833,7 +840,7 @@ export class LogParser {
             const dateBucket =
               parts.length >= 4
                 ? `${parts[parts.length - 4]}-${parts[parts.length - 3]}-${parts[parts.length - 2]}`
-                : new Date(stat.mtimeMs).toISOString().slice(0, 10);
+                : toDateBucketFromMs(stat.mtimeMs);
             entries.push({
               source: 'codex',
               sessionId: path.basename(entry, '.jsonl'),
@@ -860,7 +867,7 @@ export class LogParser {
             source: 'roo-code',
             sessionId: entry,
             path: taskDir,
-            dateBucket: new Date(stat.mtimeMs).toISOString().slice(0, 10),
+            dateBucket: toDateBucketFromMs(stat.mtimeMs),
             lastModifiedMs: stat.mtimeMs
           });
         }

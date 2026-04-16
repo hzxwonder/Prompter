@@ -13,6 +13,17 @@ function writeJsonl(filePath: string, lines: string[]): void {
   fs.writeFileSync(filePath, lines.join('\n') + '\n');
 }
 
+function writePersistedPoolState(
+  persistPath: string,
+  state: {
+    updatedAt: string;
+    files: WatchedFileInfo[];
+  }
+): void {
+  fs.mkdirSync(path.dirname(persistPath), { recursive: true });
+  fs.writeFileSync(persistPath, JSON.stringify(state, null, 2), 'utf8');
+}
+
 describe('FileWatchPool', () => {
   let tmpDir: string;
   let pool: FileWatchPool;
@@ -244,5 +255,63 @@ describe('FileWatchPool', () => {
     expect(snapshotAfter[0].lastChangedAt).toBeGreaterThan(initialChangedAt);
 
     vi.restoreAllMocks();
+  });
+
+  it('restores watch-pool entries from watch-pool.json before a full scan', () => {
+    const codexRoot = path.join(tmpDir, 'codex');
+    const logFile = path.join(codexRoot, '2026', '04', '16', 'restored.jsonl');
+    const persistPath = path.join(tmpDir, 'watch-pool.json');
+    writeJsonl(logFile, ['{"type":"event_msg"}']);
+
+    const statBefore = fs.statSync(logFile);
+    writePersistedPoolState(persistPath, {
+      updatedAt: '2026-04-16T08:00:00.000Z',
+      files: [
+        {
+          path: logFile,
+          source: 'codex',
+          lastSize: statBefore.size,
+          lastMtimeMs: statBefore.mtimeMs,
+          lastChangedAt: statBefore.mtimeMs
+        }
+      ]
+    });
+
+    const roots: WatchRootConfig[] = [{ path: codexRoot, source: 'codex' }];
+    pool = new FileWatchPool(roots, persistPath);
+    pool.start();
+
+    expect(pool.getPoolSnapshot()).toEqual([
+      expect.objectContaining({
+        path: logFile,
+        source: 'codex'
+      })
+    ]);
+  });
+
+  it('skips persisted watch entries whose files no longer exist', () => {
+    const codexRoot = path.join(tmpDir, 'codex');
+    const missingLogPath = path.join(codexRoot, '2026', '04', '16', 'missing.jsonl');
+    const persistPath = path.join(tmpDir, 'watch-pool.json');
+    fs.mkdirSync(path.dirname(missingLogPath), { recursive: true });
+
+    writePersistedPoolState(persistPath, {
+      updatedAt: '2026-04-16T08:00:00.000Z',
+      files: [
+        {
+          path: missingLogPath,
+          source: 'codex',
+          lastSize: 0,
+          lastMtimeMs: Date.now(),
+          lastChangedAt: Date.now()
+        }
+      ]
+    });
+
+    const roots: WatchRootConfig[] = [{ path: codexRoot, source: 'codex' }];
+    pool = new FileWatchPool(roots, persistPath);
+    pool.start();
+
+    expect(pool.getPoolSnapshot()).toEqual([]);
   });
 });

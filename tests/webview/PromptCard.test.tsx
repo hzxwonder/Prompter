@@ -1,5 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+// @vitest-environment jsdom
+import '@testing-library/jest-dom/vitest';
+import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PromptCard as PromptCardModel } from '../../src/shared/models';
 
 const postMessage = vi.fn();
@@ -24,6 +26,10 @@ const baseCard: PromptCardModel = {
 };
 
 describe('PromptCard', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
   beforeEach(() => {
     postMessage.mockClear();
     Object.defineProperty(window, 'acquireVsCodeApi', {
@@ -53,5 +59,23 @@ describe('PromptCard', () => {
     );
 
     expect(screen.getAllByText('已完成，待确认').length).toBeGreaterThan(0);
+  });
+
+  it('does not show awaiting-confirmation UI for a settled completed card', async () => {
+    const { PromptCard } = await import('../../webview/src/components/PromptCard');
+
+    render(
+      <PromptCard
+        language="zh-CN"
+        card={{ ...baseCard, justCompleted: false }}
+        showStatusBadge
+        onMoveCard={vi.fn()}
+        onAcknowledgeCompletion={vi.fn()}
+        onRenameGroup={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByText('已完成，待确认')).not.toBeInTheDocument();
+    expect(screen.getByText('已完成')).toBeInTheDocument();
   });
 });

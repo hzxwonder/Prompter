@@ -20,6 +20,7 @@ import {
   sanitizeImportedPromptContent,
   shouldDiscardImportedPromptContent
 } from '../shared/promptSanitization';
+import { log } from '../logger';
 import { FileStore } from './FileStore';
 
 // ─── Group colour palette ────────────────────────────────────────────────────
@@ -360,6 +361,12 @@ interface SaveModularPromptInput {
   category: string;
 }
 
+interface PersistedTodayCardsState {
+  dateBucket: string;
+  cards: PromptCard[];
+  generatedAt?: string;
+}
+
 /** Normalise any timestamp format to ISO-8601 string for consistent sorting. */
 function normalizeTs(ts: string): string {
   const raw = ts.trim();
@@ -399,6 +406,116 @@ function findReusableUnusedCardIndex(cards: PromptCard[], content: string): numb
   return -1;
 }
 
+function findMatchingImportedCardIndex(
+  cards: PromptCard[],
+  input: Pick<SaveImportedCardInput, 'sourceType' | 'sourceRef' | 'content' | 'createdAt'>
+): number {
+  const normalizedContent = normalizePromptForMatching(input.content);
+  const cardCreatedAt = input.createdAt ? normalizeTs(input.createdAt) : '';
+  const targetSessionId = resolveImportedSessionId(input.sourceType, input.sourceRef);
+
+  return cards.findIndex((card) => {
+    if (card.sourceType !== input.sourceType || card.sourceType === 'manual' || card.sourceType === 'cursor') {
+      return false;
+    }
+
+    if (input.sourceRef && card.sourceRef === input.sourceRef) {
+      return true;
+    }
+
+    if (!targetSessionId) {
+      return false;
+    }
+
+    return (
+      resolveImportedSessionId(card.sourceType, card.sourceRef) === targetSessionId &&
+      timestampsRoughlyMatch(card.createdAt, cardCreatedAt) &&
+      normalizePromptForMatching(card.content) === normalizedContent
+    );
+  });
+}
+
+function buildImportedDedupKey(card: PromptCard): string | null {
+  if (card.sourceType === 'manual' || card.sourceType === 'cursor') {
+    return null;
+  }
+
+  const sessionId = resolveImportedSessionId(card.sourceType, card.sourceRef);
+  if (!sessionId) {
+    return null;
+  }
+
+  return [
+    card.sourceType,
+    sessionId,
+    normalizeTs(card.createdAt),
+    normalizePromptForMatching(card.content)
+  ].join('|');
+}
+
+function scoreImportedCard(card: PromptCard): number {
+  let score = 0;
+
+  if (card.sourceType === 'codex' && card.sourceRef?.includes(':')) {
+    score += 4;
+  }
+  if (card.completedAt) {
+    score += 2;
+  }
+  if (card.status === 'completed') {
+    score += 1;
+  }
+  if (card.lastActiveAt) {
+    score += 1;
+  }
+
+  return score;
+}
+
+function shouldPreferImportedCard(candidate: PromptCard, incumbent: PromptCard): boolean {
+  const candidateScore = scoreImportedCard(candidate);
+  const incumbentScore = scoreImportedCard(incumbent);
+  if (candidateScore !== incumbentScore) {
+    return candidateScore > incumbentScore;
+  }
+
+  const candidateUpdatedAt = candidate.updatedAt || candidate.createdAt;
+  const incumbentUpdatedAt = incumbent.updatedAt || incumbent.createdAt;
+  if (candidateUpdatedAt !== incumbentUpdatedAt) {
+    return candidateUpdatedAt > incumbentUpdatedAt;
+  }
+
+  return candidate.id > incumbent.id;
+}
+
+function dedupeImportedCards(cards: PromptCard[]): { cards: PromptCard[]; changed: boolean } {
+  const deduped: PromptCard[] = [];
+  const dedupeIndexByKey = new Map<string, number>();
+  let changed = false;
+
+  for (const card of cards) {
+    const dedupeKey = buildImportedDedupKey(card);
+    if (!dedupeKey) {
+      deduped.push(card);
+      continue;
+    }
+
+    const existingIndex = dedupeIndexByKey.get(dedupeKey);
+    if (existingIndex === undefined) {
+      dedupeIndexByKey.set(dedupeKey, deduped.length);
+      deduped.push(card);
+      continue;
+    }
+
+    changed = true;
+    if (shouldPreferImportedCard(card, deduped[existingIndex])) {
+      deduped[existingIndex] = card;
+    }
+  }
+
+  return { cards: deduped, changed };
+}
+
 function isLegacyCodexSessionRef(sourceType: PromptSourceType, sourceRef?: string): boolean {
   return sourceType === 'codex' && Boolean(sourceRef) && !String(sourceRef).includes(':');
 }
@@ -414,6 +531,7 @@ export class PromptRepository {
   }
 
   private state: PrompterState;
+  private fullCards: PromptCard[] = [];
   private sessionGroups: SessionGroupMap = {};
 
   private constructor(
@@ -426,16 +544,19 @@ export class PromptRepository {
   async load(): Promise<void> {
     const defaultSettings = createInitialState(this.now()).settings;
     const defaultHistoryImport = createInitialHistoryImportState();
-    const [cards, modularPrompts, settings, sessionGroups, persistedHistoryImport] = await Promise.all([
+    const todayBucket = toDateBucket(this.now());
+    const [cards, modularPrompts, settings, sessionGroups, persistedHistoryImport, persistedTodayCards] = await Promise.all([
       this.store.readJson<PromptCard[]>('cards.json', []),
       this.store.readJson('modular-prompts.json', []),
       this.store.readJson<Partial<PrompterState['settings']>>('settings.json', defaultSettings),
       this.store.readJson<SessionGroupMap>('session-groups.json', {}),
-      this.store.readJson<PersistedHistoryImportState>('history-import.json', defaultHistoryImport)
+      this.store.readJson<PersistedHistoryImportState>('history-import.json', defaultHistoryImport),
+      this.store.readJson<PersistedTodayCardsState | null>('today_cards.json', null)
     ]);
 
     // ── 迁移：修正 groupName / groupId，同时移除系统自动生成的消息卡片 ──
     let needsPersist = false;
+    let needsTodayCardsPersist = false;
     const normalizedSettings = normalizeSettings(settings, defaultSettings);
     needsPersist = normalizedSettings.shortcutsMigrated;
     const normalizedHistoryImport = normalizeHistoryImport(persistedHistoryImport, defaultHistoryImport);
@@ -499,11 +620,22 @@ export class PromptRepository {
         };
       });
 
+    const importedDedupedCards = dedupeImportedCards(migratedCards);
+    if (importedDedupedCards.changed) {
+      needsPersist = true;
+      log(`[PromptRepository] Deduplicated ${migratedCards.length - importedDedupedCards.cards.length} imported history cards during load`);
+    }
+
+    this.fullCards = importedDedupedCards.cards;
+    const rebuiltTodayCards = this.buildTodayCardsState(todayBucket, importedDedupedCards.cards);
+    const nextWorkspaceCards = persistedTodayCards?.dateBucket === todayBucket ? persistedTodayCards.cards : rebuiltTodayCards.cards;
+
     this.state = {
       ...createInitialState(this.now()),
-      cards: migratedCards,
+      cards: importedDedupedCards.cards,
+      workspaceCards: nextWorkspaceCards,
       modularPrompts,
-      dailyStats: rebuildDailyStats(migratedCards),
+      dailyStats: rebuildDailyStats(importedDedupedCards.cards),
       historyImport: normalizedHistoryImport.historyImport,
       settings: normalizedSettings.settings
     };
@@ -518,14 +650,26 @@ export class PromptRepository {
       return true;
     });
     if (deduped.length < this.state.cards.length) {
+      this.fullCards = deduped;
       this.state.cards = deduped;
-      this.state.dailyStats = rebuildDailyStats(this.state.cards);
+      this.state.workspaceCards = this.buildTodayCardsState(todayBucket, deduped).cards;
+      this.state.dailyStats = rebuildDailyStats(deduped);
       needsPersist = true;
+    }
+
+    if (
+      !persistedTodayCards ||
+      persistedTodayCards.dateBucket !== todayBucket ||
+      JSON.stringify(persistedTodayCards.cards) !== JSON.stringify(rebuiltTodayCards.cards)
+    ) {
+      needsTodayCardsPersist = true;
     }
 
     // ── 若有任何迁移或清理，将结果持久化到磁盘 ──
     if (needsPersist) {
       await this.persist();
+    } else if (needsTodayCardsPersist) {
+      await this.store.writeJson('today_cards.json', this.buildTodayCardsState(todayBucket, this.fullCards));
     }
   }
 
@@ -569,8 +713,8 @@ export class PromptRepository {
       justCompleted: false
     };
 
-    this.state.cards.unshift(card);
-    this.state.dailyStats = rebuildDailyStats(this.state.cards);
+    this.fullCards.unshift(card);
+    this.syncCardsProjection();
     await this.persist();
     return card;
   }
@@ -617,6 +761,42 @@ export class PromptRepository {
         updatedAt: nowIso
       };
     }
+    const existingImportedIndex = findMatchingImportedCardIndex(this.fullCards, {
+      sourceType: input.sourceType,
+      sourceRef: input.sourceRef,
+      content: normalizedContent,
+      createdAt: cardCreatedAt
+    });
+
+    if (existingImportedIndex >= 0) {
+      const existingCard = this.fullCards[existingImportedIndex];
+      const updatedCard: PromptCard = {
+        ...existingCard,
+        title: input.title.trim() || existingCard.title,
+        content: normalizedContent,
+        status: input.status,
+        runtimeState: input.runtimeState,
+        groupId: resolvedGroupId,
+        groupName: resolvedGroupName,
+        groupColor: groupColor(resolvedGroupName),
+        sourceType: input.sourceType,
+        sourceRef: input.sourceRef ?? existingCard.sourceRef,
+        createdAt: cardCreatedAt,
+        updatedAt: nowIso,
+        dateBucket: toDateBucket(cardCreatedAt),
+        lastActiveAt: cardCreatedAt,
+        completedAt: input.status === 'completed' ? (existingCard.completedAt ?? nowIso) : undefined
+      };
+      this.fullCards[existingImportedIndex] = updatedCard;
+      if (options.rebuildStats !== false) {
+        this.syncCardsProjection();
+      }
+      if (options.persist !== false) {
+        await this.persist();
+      }
+      return updatedCard;
+    }
+
     const legacyIndex = this.state.cards.findIndex((card) =>
       isLegacyCodexSessionRef(card.sourceType, card.sourceRef) &&
       input.sourceType === 'codex' &&
@@ -643,9 +823,9 @@ export class PromptRepository {
         lastActiveAt: cardCreatedAt,
         dateBucket: toDateBucket(cardCreatedAt)
       };
-      this.state.cards[legacyIndex] = updatedCard;
+      this.fullCards[legacyIndex] = updatedCard;
       if (options.rebuildStats !== false) {
-        this.state.dailyStats = rebuildDailyStats(this.state.cards);
+        this.syncCardsProjection();
       }
       if (options.persist !== false) {
         await this.persist();
@@ -653,9 +833,9 @@ export class PromptRepository {
       return updatedCard;
     }
 
-    const reusableUnusedIndex = findReusableUnusedCardIndex(this.state.cards, normalizedContent);
+    const reusableUnusedIndex = findReusableUnusedCardIndex(this.fullCards, normalizedContent);
     if (reusableUnusedIndex >= 0) {
-      const existingCard = this.state.cards[reusableUnusedIndex];
+      const existingCard = this.fullCards[reusableUnusedIndex];
       const updatedCard: PromptCard = {
         ...existingCard,
         title: input.title.trim() || existingCard.title,
@@ -675,9 +855,9 @@ export class PromptRepository {
         justCompleted: false,
         completedAt: input.status === 'completed' ? nowIso : undefined
       };
-      this.state.cards[reusableUnusedIndex] = updatedCard;
+      this.fullCards[reusableUnusedIndex] = updatedCard;
       if (options.rebuildStats !== false) {
-        this.state.dailyStats = rebuildDailyStats(this.state.cards);
+        this.syncCardsProjection();
       }
       if (options.persist !== false) {
         await this.persist();
@@ -704,9 +884,9 @@ export class PromptRepository {
       justCompleted: false
     };
 
-    this.state.cards.unshift(card);
+    this.fullCards.unshift(card);
     if (options.rebuildStats !== false) {
-      this.state.dailyStats = rebuildDailyStats(this.state.cards);
+      this.syncCardsProjection();
     }
     if (options.persist !== false) {
       await this.persist();
@@ -758,10 +938,12 @@ export class PromptRepository {
     this.state = {
       ...this.state,
       cards: [],
+      workspaceCards: [],
       modularPrompts: [],
       dailyStats: [],
       historyImport: createInitialHistoryImportState()
     };
+    this.fullCards = [];
     this.sessionGroups = {};
     await this.persist();
   }
@@ -769,7 +951,7 @@ export class PromptRepository {
   async moveCard(cardId: string, nextStatus: PromptStatus): Promise<void> {
     const updatedAt = this.now();
 
-    this.state.cards = this.state.cards.map((card) => {
+    this.fullCards = this.fullCards.map((card) => {
       if (card.id !== cardId) {
         return card;
       }
@@ -784,13 +966,13 @@ export class PromptRepository {
       };
     });
 
-    this.state.dailyStats = rebuildDailyStats(this.state.cards);
+    this.syncCardsProjection();
     await this.persist();
   }
 
   async markCardCompletedFromLog(sourceRef: string, completedAt: string, options?: { justCompleted?: boolean }): Promise<void> {
     const shouldMarkJustCompleted = options?.justCompleted ?? true;
-    this.state.cards = this.state.cards.map((card) =>
+    this.fullCards = this.fullCards.map((card) =>
       card.sourceRef === sourceRef || card.id === sourceRef
         ? {
             ...card,
@@ -802,7 +984,7 @@ export class PromptRepository {
           }
         : card
     );
-    this.state.dailyStats = rebuildDailyStats(this.state.cards);
+    this.syncCardsProjection();
     await this.persist();
   }
 
@@ -815,7 +997,7 @@ export class PromptRepository {
       return completedIds;
     }
 
-    this.state.cards = this.state.cards.map((card) => {
+    this.fullCards = this.fullCards.map((card) => {
       if (card.status !== 'active' || card.runtimeState !== 'running') {
         return card;
       }
@@ -837,7 +1019,7 @@ export class PromptRepository {
     });
 
     if (completedIds.length > 0) {
-      this.state.dailyStats = rebuildDailyStats(this.state.cards);
+      this.syncCardsProjection();
       await this.persist();
     }
 
@@ -846,7 +1028,7 @@ export class PromptRepository {
 
   async updateCardLastActiveAt(sourceRef: string, lastActiveAt: string): Promise<void> {
     let changed = false;
-    this.state.cards = this.state.cards.map((card) => {
+    this.fullCards = this.fullCards.map((card) => {
       if (card.sourceRef === sourceRef && card.status === 'active') {
         changed = true;
         return { ...card, lastActiveAt };
@@ -860,7 +1042,7 @@ export class PromptRepository {
 
   async acknowledgeCompletion(cardId: string): Promise<void> {
     const updatedAt = this.now();
-    this.state.cards = this.state.cards.map((card) =>
+    this.fullCards = this.fullCards.map((card) =>
       card.id === cardId
         ? {
             ...card,
@@ -871,7 +1053,7 @@ export class PromptRepository {
           }
         : card
     );
-    this.state.dailyStats = rebuildDailyStats(this.state.cards);
+    this.syncCardsProjection();
     await this.persist();
   }
 
@@ -881,7 +1063,7 @@ export class PromptRepository {
       return;
     }
 
-    const targetCard = this.state.cards.find((card) => card.groupId === groupId);
+    const targetCard = this.fullCards.find((card) => card.groupId === groupId);
     const targetSessionId =
       targetCard && isImportedSessionCard(targetCard)
         ? resolveImportedSessionId(targetCard.sourceType, targetCard.sourceRef)
@@ -902,7 +1084,7 @@ export class PromptRepository {
       };
     }
 
-    this.state.cards = this.state.cards.map((card) => {
+    this.fullCards = this.fullCards.map((card) => {
       const shouldRename =
         card.groupId === groupId ||
         (
@@ -923,6 +1105,7 @@ export class PromptRepository {
         groupColor: groupColor(trimmedNextName)
       };
     });
+    this.syncCardsProjection();
     await this.persist();
   }
 
@@ -930,7 +1113,7 @@ export class PromptRepository {
     const nowIso = this.now();
     let updated: PromptCard | undefined;
 
-    this.state.cards = this.state.cards.map((card) => {
+    this.fullCards = this.fullCards.map((card) => {
       if (card.id !== cardId || card.status !== 'unused') return card;
       const title = input.title?.trim() || input.content.slice(0, 10) + (input.content.length > 10 ? '...' : '');
       updated = { ...card, title, content: input.content, fileRefs: input.fileRefs, updatedAt: nowIso };
@@ -946,16 +1129,26 @@ export class PromptRepository {
   async updateImportedCardContent(cardId: string, content: string): Promise<void> {
     const nowIso = this.now();
     const normalizedContent = sanitizeImportedPromptContent(content) || content.trim();
-    this.state.cards = this.state.cards.map((card) =>
+    this.fullCards = this.fullCards.map((card) =>
       card.id === cardId ? { ...card, content: normalizedContent, updatedAt: nowIso } : card
     );
+    this.syncCardsProjection();
     await this.persist();
   }
 
   async deleteCard(cardId: string): Promise<void> {
-    this.state.cards = this.state.cards.filter((c) => c.id !== cardId);
-    this.state.dailyStats = rebuildDailyStats(this.state.cards);
+    this.fullCards = this.fullCards.filter((c) => c.id !== cardId);
+    this.syncCardsProjection();
     await this.persist();
+  }
+
+  async rotateTodayCards(): Promise<void> {
+    const snapshot = this.buildTodayCardsState();
+    this.state = {
+      ...this.state,
+      workspaceCards: snapshot.cards
+    };
+    await this.store.writeJson('today_cards.json', snapshot);
   }
 
   private async persistHistoryImport(): Promise<void> {
@@ -963,14 +1156,34 @@ export class PromptRepository {
   }
 
   async persist(): Promise<void> {
+    this.syncCardsProjection();
+    const todayCards = this.buildTodayCardsState();
     await Promise.all([
-      this.store.writeJson('cards.json', this.state.cards),
+      this.store.writeJson('cards.json', this.fullCards),
+      this.store.writeJson('today_cards.json', todayCards),
       this.store.writeJson('modular-prompts.json', this.state.modularPrompts),
       this.store.writeJson('daily-stats.json', this.state.dailyStats),
       this.persistHistoryImport(),
       this.store.writeJson('settings.json', this.state.settings),
       this.store.writeJson('session-groups.json', this.sessionGroups)
     ]);
+  }
+
+  private syncCardsProjection(): void {
+    this.state = {
+      ...this.state,
+      cards: [...this.fullCards],
+      workspaceCards: this.buildTodayCardsState().cards,
+      dailyStats: rebuildDailyStats(this.fullCards)
+    };
+  }
+
+  private buildTodayCardsState(todayBucket = toDateBucket(this.now()), cards = this.fullCards): PersistedTodayCardsState {
+    return {
+      dateBucket: todayBucket,
+      cards: cards.filter((card) => card.dateBucket === todayBucket || card.status === 'active'),
+      generatedAt: this.now()
+    };
   }
 }
 

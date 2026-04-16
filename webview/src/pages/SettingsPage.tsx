@@ -205,6 +205,26 @@ export function SettingsPage({
             </div>
           </div>
         </section>
+
+        <section className="settings-section" aria-labelledby="settings-cache-heading">
+          <div className="panel-header">
+            <div>
+              <h2 id="settings-cache-heading">{localeText.settings.cacheHeading}</h2>
+              <p className="workspace-subtitle">{localeText.settings.cacheSubtitle}</p>
+            </div>
+          </div>
+          <div className="settings-section-body">
+            <div className="settings-danger-zone">
+              <div className="settings-danger-copy">
+                <h3>{localeText.settings.clearCache}</h3>
+                <p>{localeText.settings.cacheSubtitle}</p>
+              </div>
+              <button type="button" className="settings-danger-button" onClick={onClearCache}>
+                {localeText.settings.clearCache}
+              </button>
+            </div>
+          </div>
+        </section>
       </div>
     </div>
   );

@@ -1,15 +1,19 @@
-import * as vscode from 'vscode';
 import { execFile } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import * as vscode from 'vscode';
 import { getLocaleText } from '../shared/i18n';
 import type { BuiltinTone, PrompterState } from '../shared/models';
-import type { WebviewToExtensionMessage } from '../shared/messages';
+import type { PrompterToastMessage, WebviewToExtensionMessage } from '../shared/messages';
 import type { PromptRepository } from '../state/PromptRepository';
 import { formatFilePathImport } from '../services/PromptImportService';
 import { getWebviewHtml } from './getWebviewHtml';
-import { log, logError } from '../logger';
+import { log, logError, logWarn } from '../logger';
 
 export class PrompterPanel {
   private static currentPanel: PrompterPanel | undefined;
+  private static hostToneFilePaths = new Map<BuiltinTone, string>();
 
   static async createOrShow(
     extensionUri: vscode.Uri,
@@ -57,9 +61,19 @@ export class PrompterPanel {
   }
 
   static playCompletionTone(tone: BuiltinTone): void {
-    PrompterPanel.currentPanel?.panel.webview.postMessage({
-      type: 'audio:play',
-      payload: { tone }
+    if (PrompterPanel.currentPanel) {
+      log(`[PrompterPanel] Completion tone requested: ${tone}, using host playback even though the panel is open`);
+    } else {
+      log(`[PrompterPanel] Completion tone requested: ${tone}, using host fallback playback`);
+    }
+
+    PrompterPanel.playHostBuiltinTone(tone);
+  }
+
+  static showToast(payload: PrompterToastMessage): Thenable<boolean> | undefined {
+    return PrompterPanel.currentPanel?.panel.webview.postMessage({
+      type: 'toast:show',
+      payload
     });
   }
 
@@ -70,11 +84,85 @@ export class PrompterPanel {
     const args = process.platform === 'win32'
       ? ['-c', `(New-Object System.Media.SoundPlayer '${filePath}').PlaySync()`]
       : [filePath];
+    log(`[PrompterPanel] Playing custom tone via ${cmd}: ${filePath}`);
     execFile(cmd, args, (error) => {
       if (error) {
         logError(`Failed to play custom tone: ${filePath}`, error);
       }
     });
+  }
+
+  private static playHostBuiltinTone(tone: BuiltinTone): void {
+    const toneFilePath = PrompterPanel.ensureHostToneFile(tone);
+    log(`[PrompterPanel] Host tone playback starting for ${tone} on ${process.platform} using ${toneFilePath}`);
+
+    const runFallbackBell = () => {
+      log(`[PrompterPanel] Falling back to shell bell for tone: ${tone}`);
+      execFile('sh', ['-lc', 'printf "\\a"'], (error) => {
+        if (error) {
+          logError(`Failed to play fallback bell for tone: ${tone}`, error);
+        }
+      });
+    };
+
+    if (process.platform === 'darwin') {
+      log(`[PrompterPanel] Using afplay for built-in tone: ${tone}`);
+      execFile('afplay', [toneFilePath], (error) => {
+        if (error) {
+          logError(`Failed to play host tone: ${tone}`, error);
+        }
+      });
+      return;
+    }
+
+    if (process.platform === 'win32') {
+      log(`[PrompterPanel] Using PowerShell SoundPlayer for built-in tone: ${tone}`);
+      execFile(
+        'powershell',
+        ['-c', `(New-Object System.Media.SoundPlayer '${toneFilePath.replace(/'/g, "''")}').PlaySync()`],
+        (error) => {
+          if (error) {
+            logError(`Failed to play host tone: ${tone}`, error);
+          }
+        }
+      );
+      return;
+    }
+
+    log(`[PrompterPanel] Using Linux audio player chain for built-in tone: ${tone}`);
+    execFile('aplay', [toneFilePath], (error) => {
+      if (!error) {
+        log(`[PrompterPanel] aplay succeeded for tone: ${tone}`);
+        return;
+      }
+      logWarn(`[PrompterPanel] aplay failed for tone ${tone}, trying paplay next`);
+      execFile('paplay', [toneFilePath], (paplayError) => {
+        if (!paplayError) {
+          log(`[PrompterPanel] paplay succeeded for tone: ${tone}`);
+          return;
+        }
+        logWarn(`[PrompterPanel] paplay failed for tone ${tone}, trying shell bell fallback`);
+        if (paplayError) {
+          runFallbackBell();
+        }
+      });
+    });
+  }
+
+  private static ensureHostToneFile(tone: BuiltinTone): string {
+    const existing = PrompterPanel.hostToneFilePaths.get(tone);
+    if (existing && existsSync(existing)) {
+      log(`[PrompterPanel] Reusing cached host tone file for ${tone}: ${existing}`);
+      return existing;
+    }
+
+    const tonesDir = join(tmpdir(), 'prompter-tones');
+    mkdirSync(tonesDir, { recursive: true });
+    const targetPath = join(tonesDir, `${tone}.wav`);
+    writeFileSync(targetPath, buildToneWavBuffer(tone));
+    PrompterPanel.hostToneFilePaths.set(tone, targetPath);
+    log(`[PrompterPanel] Generated host tone file for ${tone}: ${targetPath}`);
+    return targetPath;
   }
 
   static async refresh(repository: PromptRepository): Promise<void> {
@@ -360,6 +448,18 @@ export class PrompterPanel {
       }
 
       if (message.type === 'cache:clear') {
+        const state = await this.repository.getState();
+        const localeText = getLocaleText(state.settings.language);
+        const choice = await vscode.window.showWarningMessage(
+          localeText.host.confirmations.clearCacheMessage,
+          localeText.host.confirmations.clearCacheConfirm,
+          localeText.host.confirmations.cancel
+        );
+
+        if (choice !== localeText.host.confirmations.clearCacheConfirm) {
+          return;
+        }
+
         await this.repository.clearCache();
         this.panel.webview.postMessage({
           type: 'state:replace',
@@ -375,4 +475,61 @@ export class PrompterPanel {
       activeView
     };
   }
+}
+
+function buildToneWavBuffer(tone: BuiltinTone): Buffer {
+  const sampleRate = 44100;
+  const durationSeconds = tone === 'ding' ? 0.18 : 0.34;
+  const sampleCount = Math.floor(sampleRate * durationSeconds);
+  const data = Buffer.alloc(sampleCount * 2);
+
+  const tones: Record<BuiltinTone, Array<{ freq: number; gain: number; start: number; end: number }>> = {
+    'soft-bell': [
+      { freq: 830, gain: 0.28, start: 0, end: 0.3 },
+      { freq: 1245, gain: 0.14, start: 0, end: 0.2 }
+    ],
+    chime: [
+      { freq: 523.25, gain: 0.22, start: 0, end: 0.24 },
+      { freq: 659.25, gain: 0.18, start: 0.08, end: 0.32 },
+      { freq: 783.99, gain: 0.18, start: 0.16, end: 0.34 }
+    ],
+    ding: [
+      { freq: 1200, gain: 0.35, start: 0, end: 0.15 }
+    ]
+  };
+
+  for (let i = 0; i < sampleCount; i += 1) {
+    const t = i / sampleRate;
+    let sample = 0;
+
+    for (const partial of tones[tone]) {
+      if (t < partial.start || t > partial.end) {
+        continue;
+      }
+      const relativeT = t - partial.start;
+      const lifetime = partial.end - partial.start;
+      const envelope = Math.exp((-6 * relativeT) / lifetime);
+      sample += Math.sin(2 * Math.PI * partial.freq * relativeT) * partial.gain * envelope;
+    }
+
+    const clamped = Math.max(-1, Math.min(1, sample));
+    data.writeInt16LE(Math.round(clamped * 32767), i * 2);
+  }
+
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + data.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(data.length, 40);
+
+  return Buffer.concat([header, data]);
 }
