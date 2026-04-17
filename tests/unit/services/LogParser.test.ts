@@ -125,6 +125,69 @@ describe('LogParser Claude event filtering', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('assigns unique source refs to multiple Claude prompts in the same session', () => {
+    const tempDir = fs.mkdtempSync(path.join(tmpdir(), 'prompter-claude-log-'));
+    const projectDir = path.join(tempDir, 'project-b');
+    const logPath = path.join(projectDir, 'session-2.jsonl');
+
+    try {
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(
+        logPath,
+        [
+          JSON.stringify({
+            type: 'user',
+            userType: 'external',
+            promptId: 'prompt-1',
+            uuid: 'uuid-1',
+            timestamp: '2026-04-14T15:20:00.000Z',
+            message: {
+              role: 'user',
+              content: [{ type: 'text', text: 'First prompt' }]
+            }
+          }),
+          JSON.stringify({
+            message: {
+              stop_reason: 'end_turn'
+            },
+            timestamp: '2026-04-14T15:20:05.000Z'
+          }),
+          JSON.stringify({
+            type: 'user',
+            userType: 'external',
+            promptId: 'prompt-2',
+            uuid: 'uuid-2',
+            timestamp: '2026-04-14T15:21:00.000Z',
+            message: {
+              role: 'user',
+              content: [{ type: 'text', text: 'Second prompt' }]
+            }
+          })
+        ].join('\n'),
+        'utf8'
+      );
+
+      const parser = new LogParser();
+      const prompts = (parser as any).extractClaudePrompts(logPath);
+
+      expect(prompts).toEqual([
+        expect.objectContaining({
+          sessionId: 'session-2',
+          sourceRef: 'session-2:prompt-1',
+          userInput: 'First prompt',
+          completedAt: '2026-04-14T15:20:05.000Z'
+        }),
+        expect.objectContaining({
+          sessionId: 'session-2',
+          sourceRef: 'session-2:prompt-2',
+          userInput: 'Second prompt'
+        })
+      ]);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('LogParser lightweight today/running discovery', () => {
@@ -200,6 +263,41 @@ describe('LogParser lightweight today/running discovery', () => {
 });
 
 describe('LogParser Codex turn completion', () => {
+  it('upgrades a legacy Claude session-level sourceRef to a prompt-level sourceRef during reconciliation', () => {
+    const result = resolvePromptStatuses(
+      [
+        {
+          source: 'claude-code',
+          sessionId: 'claude-session-1',
+          sourceRef: 'claude-session-1:prompt-1',
+          project: 'project-a',
+          userInput: 'Investigate remote sync drift',
+          createdAt: '2026-04-12T07:51:28.045Z'
+        }
+      ],
+      [
+        {
+          source: 'claude-code',
+          sessionId: 'claude-session-1',
+          sourceRef: 'claude-session-1',
+          project: 'project-a',
+          userInput: 'Investigate remote sync drift',
+          createdAt: '2026-04-12T07:51:28.046Z',
+          status: 'running',
+          justCompleted: false
+        }
+      ],
+      new Set<string>()
+    );
+
+    expect(result.nextState).toEqual([
+      expect.objectContaining({
+        sourceRef: 'claude-session-1:prompt-1'
+      })
+    ]);
+    expect(result.inserted).toEqual([]);
+  });
+
   it('ignores replayed parent-session turns inside a forked codex session log', () => {
     const sessionId = 'rollout-2026-04-12T15-51-28-019d80ac-9805-7892-b42b-edea466530ac';
     const records = extractCodexPromptRecords([

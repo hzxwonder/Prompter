@@ -77,11 +77,11 @@ function resolveImportedSessionId(sourceType: PromptSourceType, sourceRef?: stri
     return undefined;
   }
 
-  if (sourceType === 'codex') {
+  if (sourceType === 'codex' || sourceType === 'claude-code') {
     return sourceRef.includes(':') ? sourceRef.split(':')[0] : sourceRef;
   }
 
-  if (sourceType === 'claude-code' || sourceType === 'roo-code') {
+  if (sourceType === 'roo-code') {
     return sourceRef;
   }
 
@@ -128,7 +128,7 @@ function getFallbackGroupName(
   // 若检测到此模式，且 sourceRef（即 session id）可用，则改用 session id 作为分组名。
   // 这同时覆盖"迁移旧卡片"的场景：load() 时会调用此函数，自动将存量卡片的分组名更新过来。
   if (sourceType === 'claude-code' && sourceRef && trimmedGroupName?.startsWith('-')) {
-    return sourceRef;
+    return resolveImportedSessionId(sourceType, sourceRef) ?? sourceRef;
   }
 
   if (trimmedGroupName && trimmedGroupName !== '未分类') {
@@ -137,6 +137,10 @@ function getFallbackGroupName(
 
   if ((sourceType === 'codex' || sourceType === 'roo-code') && sourceRef) {
     return sourceRef;
+  }
+
+  if (sourceType === 'claude-code' && sourceRef) {
+    return resolveImportedSessionId(sourceType, sourceRef) ?? sourceRef;
   }
 
   return trimmedGroupName || '未分类';

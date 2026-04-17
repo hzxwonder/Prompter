@@ -364,7 +364,7 @@ describe('App shell', () => {
         lastMessage={{
           type: 'composer:insertText',
           payload: {
-            text: 'File: /workspace/src/api.ts:4-8\n```ts\nexport function load() {}\n```',
+            text: 'File: /workspace/src/api.ts:4-8\n```\nexport function load() {}\n```',
             fileRefs: [{ path: '/workspace/src/api.ts', startLine: 4, endLine: 8 }]
           }
         }}
@@ -372,7 +372,7 @@ describe('App shell', () => {
     );
 
     expect(screen.getByRole('textbox', { name: 'Prompt' })).toHaveValue(
-      'File: /workspace/src/api.ts:4-8\n```ts\nexport function load() {}\n```'
+      'File: /workspace/src/api.ts:4-8\n```\nexport function load() {}\n```'
     );
 
     await user.click(screen.getByRole('button', { name: '历史' }));

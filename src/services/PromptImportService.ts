@@ -27,5 +27,5 @@ export function formatSelectionImport(input: {
   selection: string;
 }): string {
   const displayPath = resolveImportedPath(input.filePath, input.workspaceRoot, input.pathMode);
-  return [`File: ${displayPath}:${input.startLine}-${input.endLine}`, '```ts', input.selection.trimEnd(), '```'].join('\n');
+  return [`File: ${displayPath}:${input.startLine}-${input.endLine}`, '```', input.selection.trimEnd(), '```'].join('\n');
 }

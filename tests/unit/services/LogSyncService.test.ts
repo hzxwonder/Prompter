@@ -87,6 +87,50 @@ describe('LogSyncService', () => {
     expect((LogSyncService as any).resolveHistoryWorkerCount(2)).toBe(3);
   });
 
+  it('backfills parsed prompts that exist in logs-state but are missing cards', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      saveImportedCard: vi.fn().mockImplementation(async (input) => ({
+        id: 'backfilled-card',
+        ...input
+      })),
+      markCardCompletedFromLog: vi.fn().mockResolvedValue(undefined)
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const parser = (service as any).parser;
+    parser.getAllPrompts.mockReturnValue([
+      {
+        source: 'codex',
+        sessionId: 'session-1',
+        sourceRef: 'session-1:turn-1',
+        project: 'session-1',
+        userInput: 'Backfill the missing imported prompt card.',
+        createdAt: '2026-04-08T09:59:00.000Z',
+        status: 'completed',
+        completedAt: '2026-04-08T10:01:00.000Z'
+      }
+    ]);
+
+    await (service as any).reconcileMissingParsedPromptCards();
+
+    expect(repository.saveImportedCard).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceType: 'codex',
+        sourceRef: 'session-1:turn-1',
+        status: 'completed',
+        runtimeState: 'finished',
+        createdAt: '2026-04-08T09:59:00.000Z'
+      })
+    );
+    expect(repository.markCardCompletedFromLog).toHaveBeenCalledWith(
+      'session-1:turn-1',
+      '2026-04-08T10:01:00.000Z',
+      { justCompleted: false }
+    );
+  });
+
   it('sends completion notifications through PrompterPanel.showToast instead of host info messages', async () => {
     const state = createInitialState('2026-04-08T10:00:00.000Z');
     state.settings.language = 'en';
@@ -180,6 +224,47 @@ describe('LogSyncService', () => {
       actionLabel: '查看',
       actionCommand: 'prompter.open'
     });
+    (vscode.env as { remoteName?: string }).remoteName = undefined;
+  });
+
+  it('does not block remote completion handling on an unresolved host notification', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    state.settings.language = 'en';
+    state.settings.notifyOnFinish = true;
+    state.settings.completionTone = 'chime';
+    state.cards = [
+      {
+        id: 'card-1',
+        title: 'Release wrap-up',
+        content: 'Summarize the shipped changes.',
+        status: 'active',
+        runtimeState: 'running',
+        groupId: 'release',
+        groupName: 'release',
+        groupColor: '#22c55e',
+        sourceType: 'codex',
+        sourceRef: 'session-1',
+        createdAt: '2026-04-08T10:00:00.000Z',
+        updatedAt: '2026-04-08T10:00:00.000Z',
+        dateBucket: '2026-04-08',
+        fileRefs: [],
+        justCompleted: false
+      }
+    ];
+
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      markCardCompletedFromLog: vi.fn().mockResolvedValue(undefined)
+    };
+
+    const vscode = await import('vscode');
+    (vscode.env as { remoteName?: string }).remoteName = 'ssh-remote';
+    showInformationMessage.mockReturnValueOnce(new Promise<undefined>(() => {}) as never);
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+
+    await expect((service as any).handlePromptCompleted('session-1')).resolves.toBeUndefined();
+
     (vscode.env as { remoteName?: string }).remoteName = undefined;
   });
 

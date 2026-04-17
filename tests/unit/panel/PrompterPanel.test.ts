@@ -268,10 +268,14 @@ describe('PrompterPanel', () => {
 
   it('pushes history import updates without requiring a full panel refresh', async () => {
     const postMessage = vi.fn();
+    let onDidReceiveMessage: ((message: { type: 'ready' }) => Promise<void>) | undefined;
     const vscode = await import('vscode');
 
     vi.mocked(vscode.window.createWebviewPanel).mockReturnValue(
-      createMockPanel(postMessage, () => createDisposable())
+      createMockPanel(postMessage, (listener) => {
+        onDidReceiveMessage = listener as typeof onDidReceiveMessage;
+        return createDisposable();
+      })
     );
 
     const state = createInitialState('2026-04-08T10:00:00.000Z');
@@ -288,6 +292,7 @@ describe('PrompterPanel', () => {
     };
 
     await PrompterPanel.createOrShow({} as never, repository as never);
+    await onDidReceiveMessage?.({ type: 'ready' });
     postMessage.mockClear();
 
     await PrompterPanel.syncHistoryImport(repository as never);
@@ -300,10 +305,14 @@ describe('PrompterPanel', () => {
 
   it('posts toast messages through the active Prompter panel', async () => {
     const postMessage = vi.fn().mockResolvedValue(true);
+    let onDidReceiveMessage: ((message: { type: 'ready' }) => Promise<void>) | undefined;
     const vscode = await import('vscode');
 
     vi.mocked(vscode.window.createWebviewPanel).mockReturnValue(
-      createMockPanel(postMessage, () => createDisposable())
+      createMockPanel(postMessage, (listener) => {
+        onDidReceiveMessage = listener as typeof onDidReceiveMessage;
+        return createDisposable();
+      })
     );
 
     const repository = {
@@ -311,6 +320,7 @@ describe('PrompterPanel', () => {
     };
 
     await PrompterPanel.createOrShow({} as never, repository as never);
+    await onDidReceiveMessage?.({ type: 'ready' });
     postMessage.mockClear();
 
     await PrompterPanel.showToast({
@@ -373,10 +383,14 @@ describe('PrompterPanel', () => {
 
   it('uses active webview playback when explicitly requested and the panel is open', async () => {
     const postMessage = vi.fn().mockResolvedValue(true);
+    let onDidReceiveMessage: ((message: { type: 'ready' }) => Promise<void>) | undefined;
     const vscode = await import('vscode');
 
     vi.mocked(vscode.window.createWebviewPanel).mockReturnValue(
-      createMockPanel(postMessage, () => createDisposable())
+      createMockPanel(postMessage, (listener) => {
+        onDidReceiveMessage = listener as typeof onDidReceiveMessage;
+        return createDisposable();
+      })
     );
 
     const repository = {
@@ -384,6 +398,7 @@ describe('PrompterPanel', () => {
     };
 
     await PrompterPanel.createOrShow({} as never, repository as never);
+    await onDidReceiveMessage?.({ type: 'ready' });
     postMessage.mockClear();
 
     const played = PrompterPanel.playCompletionToneInWebviewIfOpen('ding');
@@ -720,7 +735,121 @@ describe('PrompterPanel', () => {
     expect(repository.getState).toHaveBeenCalledTimes(1);
     expect(postMessage).toHaveBeenCalledWith({
       type: 'state:replace',
-      payload: { ...initialState, activeView: 'settings' }
+      payload: { ...initialState, activeView: 'settings', cards: initialState.workspaceCards }
+    });
+  });
+
+  it('hydrates the workspace view with workspace cards only before history is opened', async () => {
+    const initialState = createInitialState('2026-04-08T10:00:00.000Z');
+    initialState.cards = [
+      {
+        id: 'history-card',
+        title: 'History prompt',
+        content: 'Previously completed prompt',
+        status: 'completed',
+        runtimeState: 'finished',
+        groupId: 'g1',
+        groupName: 'g1',
+        groupColor: '#000000',
+        sourceType: 'codex',
+        sourceRef: 'session-1:turn-1',
+        createdAt: '2026-04-07T09:00:00.000Z',
+        updatedAt: '2026-04-07T09:05:00.000Z',
+        completedAt: '2026-04-07T09:05:00.000Z',
+        dateBucket: '2026-04-07',
+        fileRefs: [],
+        justCompleted: false
+      }
+    ];
+    initialState.workspaceCards = [
+      {
+        id: 'workspace-card',
+        title: 'Workspace prompt',
+        content: 'Current running prompt',
+        status: 'active',
+        runtimeState: 'running',
+        groupId: 'g2',
+        groupName: 'g2',
+        groupColor: '#111111',
+        sourceType: 'codex',
+        sourceRef: 'session-2:turn-1',
+        createdAt: '2026-04-08T10:00:00.000Z',
+        updatedAt: '2026-04-08T10:00:00.000Z',
+        dateBucket: '2026-04-08',
+        fileRefs: [],
+        justCompleted: false
+      }
+    ];
+    const postMessage = vi.fn();
+    let onDidReceiveMessage: ((message: { type: 'ready' }) => Promise<void>) | undefined;
+    const vscode = await import('vscode');
+
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValue(
+      createMockPanel(postMessage, (listener) => {
+        onDidReceiveMessage = listener as typeof onDidReceiveMessage;
+        return createDisposable();
+      })
+    );
+
+    const repository = {
+      getState: vi.fn().mockResolvedValue(initialState)
+    };
+
+    await PrompterPanel.createOrShow({} as never, repository as never);
+    await onDidReceiveMessage?.({ type: 'ready' });
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'hydrate',
+      payload: {
+        ...initialState,
+        activeView: 'workspace',
+        cards: initialState.workspaceCards
+      }
+    });
+  });
+
+  it('queues toast messages until the webview is ready', async () => {
+    const postMessage = vi.fn().mockResolvedValue(true);
+    let onDidReceiveMessage: ((message: { type: 'ready' }) => Promise<void>) | undefined;
+    const vscode = await import('vscode');
+
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValue(
+      createMockPanel(postMessage, (listener) => {
+        onDidReceiveMessage = listener as typeof onDidReceiveMessage;
+        return createDisposable();
+      })
+    );
+
+    const repository = {
+      getState: vi.fn().mockResolvedValue(createInitialState('2026-04-16T09:00:00.000Z'))
+    };
+
+    await PrompterPanel.createOrShow({} as never, repository as never);
+
+    await PrompterPanel.showToast({
+      id: 'toast-before-ready',
+      kind: 'info',
+      message: 'Prompt completed',
+      actionLabel: 'View',
+      actionCommand: 'prompter.open'
+    } as never);
+
+    expect(postMessage).not.toHaveBeenCalledWith({
+      type: 'toast:show',
+      payload: expect.anything()
+    });
+
+    await onDidReceiveMessage?.({ type: 'ready' });
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'toast:show',
+      payload: {
+        id: 'toast-before-ready',
+        kind: 'info',
+        message: 'Prompt completed',
+        actionLabel: 'View',
+        actionCommand: 'prompter.open'
+      }
     });
   });
 

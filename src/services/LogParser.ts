@@ -64,6 +64,8 @@ interface ClaudeUserEvent {
   userType?: string;
   isMeta?: boolean;
   sourceToolUseID?: string;
+  promptId?: string;
+  uuid?: string;
   message?: {
     role?: string;
     content?: ClaudeTextContentItem[];
@@ -133,6 +135,17 @@ export function extractClaudeUserText(event: unknown): string {
 }
 
 export { shouldDiscardImportedPromptContent } from '../shared/promptSanitization';
+
+function buildClaudePromptSourceRef(event: ClaudeUserEvent, sessionId: string, promptIndex: number): string {
+  const eventPromptId =
+    typeof event.promptId === 'string' && event.promptId.trim()
+      ? event.promptId.trim()
+      : typeof event.uuid === 'string' && event.uuid.trim()
+        ? event.uuid.trim()
+        : `prompt-${promptIndex}`;
+
+  return `${sessionId}:${eventPromptId}`;
+}
 
 function sessionKey(source: LogPrompt['source'], sessionId: string): string {
   return `${source}:${sessionId}`;
@@ -372,6 +385,9 @@ export function resolvePromptStatuses(
         return false;
       }
       if (row.source === 'codex' && !String(row.sourceRef).includes(':')) {
+        return String(prompt.sourceRef).startsWith(`${row.sessionId}:`);
+      }
+      if (row.source === 'claude-code' && !String(row.sourceRef).includes(':')) {
         return String(prompt.sourceRef).startsWith(`${row.sessionId}:`);
       }
       return prompt.sourceRef === row.sourceRef;
@@ -619,7 +635,7 @@ export class LogParser {
               prompts.push({
                 source: 'claude-code',
                 sessionId,
-                sourceRef: sessionId,
+                sourceRef: buildClaudePromptSourceRef(event, sessionId, prompts.length + 1),
                 project,
                 userInput: rawText,
                 createdAt: event.timestamp ?? ''

@@ -299,7 +299,7 @@ describe('PromptRepository', () => {
     expect(log).toHaveBeenCalledWith('[PromptRepository] Deduplicated 1 imported history cards during load');
   });
 
-  it('uses session id as the fallback group name for codex and roo imports', async () => {
+  it('uses session id as the fallback group name for codex, claude turn refs, and roo imports', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
     const repo = await PromptRepository.create(dir, () => '2026-04-08T10:00:00.000Z');
 
@@ -309,6 +309,16 @@ describe('PromptRepository', () => {
       groupName: '未分类',
       sourceType: 'codex',
       sourceRef: 'codex-session-1',
+      status: 'active',
+      runtimeState: 'running'
+    });
+
+    const claudeCard = await repo.saveImportedCard({
+      title: 'Trace remote sync',
+      content: 'Investigate the delayed Claude card import',
+      groupName: '未分类',
+      sourceType: 'claude-code',
+      sourceRef: 'claude-session-9:prompt-2',
       status: 'active',
       runtimeState: 'running'
     });
@@ -324,6 +334,7 @@ describe('PromptRepository', () => {
     });
 
     expect(codexCard.groupName).toBe('codex-session-1');
+    expect(claudeCard.groupName).toBe('claude-session-9');
     expect(rooCard.groupName).toBe('roo-task-7');
   });
 

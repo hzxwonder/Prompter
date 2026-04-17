@@ -5,11 +5,18 @@ import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import * as vscode from 'vscode';
 import { getLocaleText } from '../shared/i18n';
 import type { BuiltinTone, PrompterState } from '../shared/models';
-import type { PrompterToastMessage, WebviewToExtensionMessage } from '../shared/messages';
+import type { ExtensionToWebviewMessage, PrompterToastMessage, WebviewToExtensionMessage } from '../shared/messages';
 import type { PromptRepository } from '../state/PromptRepository';
 import { formatFilePathImport } from '../services/PromptImportService';
 import { getWebviewHtml } from './getWebviewHtml';
 import { log, logError, logWarn } from '../logger';
+
+type PanelOutboundMessage =
+  | ExtensionToWebviewMessage
+  | {
+      type: 'composer:insertText';
+      payload: { text: string; fileRefs?: { path: string; startLine?: number; endLine?: number }[]; insertAt?: number };
+    };
 
 export class PrompterPanel {
   private static currentPanel: PrompterPanel | undefined;
@@ -41,8 +48,11 @@ export class PrompterPanel {
     await instance.render();
   }
 
-  static postMessage(message: { type: 'composer:insertText'; payload: { text: string; fileRefs?: { path: string; startLine?: number; endLine?: number }[] } }): Thenable<boolean> | undefined {
-    return PrompterPanel.currentPanel?.panel.webview.postMessage(message);
+  static postMessage(message: {
+    type: 'composer:insertText';
+    payload: { text: string; fileRefs?: { path: string; startLine?: number; endLine?: number }[]; insertAt?: number };
+  }): Thenable<boolean> | undefined {
+    return PrompterPanel.currentPanel?.postWebviewMessage(message);
   }
 
   static async showView(repository: PromptRepository, view: PrompterState['activeView']): Promise<void> {
@@ -51,10 +61,11 @@ export class PrompterPanel {
     }
 
     const state = await repository.getState();
-    await PrompterPanel.currentPanel.panel.webview.postMessage({
+    PrompterPanel.currentPanel.currentView = view;
+    await PrompterPanel.currentPanel.postWebviewMessage({
       type: 'state:replace',
       payload: {
-        ...state,
+        ...PrompterPanel.currentPanel.buildPanelState(state, view),
         activeView: view
       }
     });
@@ -77,7 +88,7 @@ export class PrompterPanel {
     }
 
     log(`[PrompterPanel] Completion tone requested: ${tone}, using active webview playback`);
-    PrompterPanel.currentPanel.panel.webview.postMessage({
+    PrompterPanel.currentPanel.postWebviewMessage({
       type: 'audio:play',
       payload: { tone }
     });
@@ -85,7 +96,7 @@ export class PrompterPanel {
   }
 
   static showToast(payload: PrompterToastMessage): Thenable<boolean> | undefined {
-    return PrompterPanel.currentPanel?.panel.webview.postMessage({
+    return PrompterPanel.currentPanel?.postWebviewMessage({
       type: 'toast:show',
       payload
     });
@@ -182,14 +193,17 @@ export class PrompterPanel {
   static async refresh(repository: PromptRepository): Promise<void> {
     if (PrompterPanel.currentPanel) {
       const state = await repository.getState();
-      PrompterPanel.currentPanel.panel.webview.postMessage({ type: 'state:replace', payload: state });
+      await PrompterPanel.currentPanel.postWebviewMessage({
+        type: 'state:replace',
+        payload: PrompterPanel.currentPanel.buildPanelState(state)
+      });
     }
   }
 
   static async syncHistoryImport(repository: PromptRepository): Promise<void> {
     if (PrompterPanel.currentPanel) {
       const state = await repository.getState();
-      PrompterPanel.currentPanel.panel.webview.postMessage({
+      await PrompterPanel.currentPanel.postWebviewMessage({
         type: 'historyImport:updated',
         payload: state.historyImport
       });
@@ -209,8 +223,63 @@ export class PrompterPanel {
     }
   ) {
     this.panel.onDidDispose(() => {
-      PrompterPanel.currentPanel = undefined;
+      this.markDisposed();
     });
+  }
+
+  private webviewReady = false;
+  private currentView: PrompterState['activeView'] = 'workspace';
+  private pendingMessages: PanelOutboundMessage[] = [];
+
+  private buildPanelState(state: PrompterState, activeView = this.currentView): PrompterState {
+    if (activeView === 'history') {
+      return {
+        ...state,
+        activeView
+      };
+    }
+
+    return {
+      ...state,
+      activeView,
+      cards: state.workspaceCards
+    };
+  }
+
+  private queueMessage(message: PanelOutboundMessage): Thenable<boolean> {
+    if (message.type === 'state:replace') {
+      this.pendingMessages = this.pendingMessages.filter((pending) => pending.type !== 'state:replace');
+    }
+
+    if (message.type === 'historyImport:updated') {
+      this.pendingMessages = this.pendingMessages.filter((pending) => pending.type !== 'historyImport:updated');
+    }
+
+    this.pendingMessages.push(message);
+    return Promise.resolve(true);
+  }
+
+  private postWebviewMessage(message: PanelOutboundMessage): Thenable<boolean> {
+    if (!this.webviewReady) {
+      return this.queueMessage(message);
+    }
+
+    return this.panel.webview.postMessage(message);
+  }
+
+  private async flushPendingMessages(): Promise<void> {
+    const queued = [...this.pendingMessages];
+    this.pendingMessages = [];
+
+    for (const message of queued) {
+      await this.panel.webview.postMessage(message);
+    }
+  }
+
+  private markDisposed(): void {
+    PrompterPanel.currentPanel = undefined;
+    this.webviewReady = false;
+    this.pendingMessages = [];
   }
 
   async render(): Promise<void> {
@@ -219,11 +288,18 @@ export class PrompterPanel {
       this.actions?.onUserActivity?.();
 
       if (message.type === 'ready') {
-        this.panel.webview.postMessage({ type: 'hydrate', payload: await this.repository.getState() });
+        this.webviewReady = true;
+        const state = await this.repository.getState();
+        await this.panel.webview.postMessage({
+          type: 'hydrate',
+          payload: this.buildPanelState(state)
+        });
+        await this.flushPendingMessages();
       }
 
       if (message.type === 'view:set') {
-        const nextState = this.withActiveView(await this.repository.getState(), message.payload.view);
+        this.currentView = message.payload.view;
+        const nextState = this.withActiveView(this.buildPanelState(await this.repository.getState(), message.payload.view), message.payload.view);
         this.panel.webview.postMessage({ type: 'state:replace', payload: nextState });
       }
 

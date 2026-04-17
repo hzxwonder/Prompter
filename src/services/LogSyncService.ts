@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { availableParallelism, homedir } from 'node:os';
 import { toDateBucket, toLocalDateBucket, type BuiltinTone, type HistoryImportEntry } from '../shared/models';
 import { getLocaleText } from '../shared/i18n';
+import { normalizePromptForMatching } from '../shared/promptSanitization';
 import type { PromptRepository } from '../state/PromptRepository';
 import { PrompterPanel } from '../panel/PrompterPanel';
 import { LogParser, type LogPrompt, type LogSessionScanEntry, type ParsedPromptRecord } from './LogParser';
@@ -756,6 +757,7 @@ export class LogSyncService {
       // Reconcile: catch any active cards whose log prompt already has completedAt
       // but whose card was never transitioned (e.g. transition was missed in a prior sync cycle)
       await this.reconcileStaleActiveCards();
+      await this.reconcileMissingParsedPromptCards();
 
       // Update lastActiveAt for active cards based on session file modification time
       await this.updateActiveCardTimestamps();
@@ -914,6 +916,58 @@ export class LogSyncService {
     }
   }
 
+  private async reconcileMissingParsedPromptCards(): Promise<void> {
+    const state = await this.repository.getState();
+    const parsedPrompts = this.parser.getAllPrompts().sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    let changed = false;
+
+    for (const prompt of parsedPrompts) {
+      if (this.hasMatchingImportedCard(state, prompt)) {
+        continue;
+      }
+
+      const card = await this.repository.saveImportedCard(this.buildImportedCardInput(prompt, {}));
+      if (prompt.status === 'completed' && prompt.completedAt) {
+        await this.repository.markCardCompletedFromLog(card.sourceRef ?? card.id, prompt.completedAt, { justCompleted: false });
+      }
+      changed = true;
+      state.cards.push(card);
+    }
+
+    if (changed) {
+      await PrompterPanel.refresh(this.repository);
+    }
+  }
+
+  private hasMatchingImportedCard(
+    state: Awaited<ReturnType<PromptRepository['getState']>>,
+    prompt: LogPrompt
+  ): boolean {
+    const normalizedPrompt = normalizePromptForMatching(prompt.userInput);
+    const promptCreatedAtMs = Date.parse(prompt.createdAt);
+
+    return state.cards.some((card) => {
+      if (card.sourceType !== prompt.source) {
+        return false;
+      }
+
+      if (resolveSessionId(card.sourceType, card.sourceRef) !== prompt.sessionId) {
+        return false;
+      }
+
+      if (normalizePromptForMatching(card.content) !== normalizedPrompt) {
+        return false;
+      }
+
+      const cardCreatedAtMs = Date.parse(card.createdAt);
+      if (Number.isNaN(promptCreatedAtMs) || Number.isNaN(cardCreatedAtMs)) {
+        return card.createdAt === prompt.createdAt;
+      }
+
+      return Math.abs(cardCreatedAtMs - promptCreatedAtMs) <= 2000;
+    });
+  }
+
   private playToneFromSettings(tone: string, customPath: string): void {
     if (this.isRemoteExtensionHost()) {
       if (tone !== 'off' && tone !== 'custom' && BUILTIN_TONES.has(tone)) {
@@ -963,13 +1017,17 @@ export class LogSyncService {
       return;
     }
 
-    const selection = actionLabel
-      ? await vscode.window.showInformationMessage(message, actionLabel)
-      : await vscode.window.showInformationMessage(message);
+    void (async () => {
+      const selection = actionLabel
+        ? await vscode.window.showInformationMessage(message, actionLabel)
+        : await vscode.window.showInformationMessage(message);
 
-    if (selection === actionLabel && actionLabel) {
-      await vscode.commands.executeCommand('prompter.open');
-    }
+      if (selection === actionLabel && actionLabel) {
+        await vscode.commands.executeCommand('prompter.open');
+      }
+    })().catch((error) => {
+      logError('[LogSyncService] 本地通知失败', error);
+    });
   }
 
   private async updateActiveCardTimestamps(): Promise<void> {
@@ -1130,7 +1188,7 @@ function resolveSessionId(
     return undefined;
   }
 
-  if (sourceType === 'codex') {
+  if (sourceType === 'codex' || sourceType === 'claude-code') {
     return sourceRef.includes(':') ? sourceRef.split(':')[0] : sourceRef;
   }
 

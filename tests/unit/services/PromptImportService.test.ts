@@ -13,7 +13,7 @@ describe('PromptImportService', () => {
     });
 
     expect(text).toContain('File: src/api.ts:4-8');
-    expect(text).toContain('```ts');
+    expect(text).toContain('```');
   });
 
   it('formats dropped file paths with the default path mode', () => {
