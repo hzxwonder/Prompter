@@ -3,8 +3,9 @@ import type { ExtensionContext } from 'vscode';
 import { createInitialState, toLocalDateBucket } from '../../../src/shared/models';
 import { LogSyncService } from '../../../src/services/LogSyncService';
 
-const { showInformationMessage } = vi.hoisted(() => ({
-  showInformationMessage: vi.fn().mockResolvedValue(undefined)
+const { showInformationMessage, log } = vi.hoisted(() => ({
+  showInformationMessage: vi.fn().mockResolvedValue(undefined),
+  log: vi.fn()
 }));
 const { MockFileWatchPool } = vi.hoisted(() => ({
   MockFileWatchPool: vi.fn().mockImplementation(() => ({
@@ -19,6 +20,9 @@ vi.mock('vscode', () => ({
   window: {
     showInformationMessage
   },
+  env: {
+    remoteName: undefined
+  },
   commands: {
     executeCommand: vi.fn()
   }
@@ -29,6 +33,7 @@ vi.mock('../../../src/panel/PrompterPanel', () => ({
     refresh: vi.fn().mockResolvedValue(undefined),
     syncHistoryImport: vi.fn().mockResolvedValue(undefined),
     playCompletionTone: vi.fn(),
+    playCompletionToneInWebviewIfOpen: vi.fn(() => false),
     playCustomTone: vi.fn(),
     showToast: vi.fn().mockResolvedValue(true)
   }
@@ -53,7 +58,7 @@ vi.mock('../../../src/services/LogParser', () => ({
 }));
 
 vi.mock('../../../src/logger', () => ({
-  log: vi.fn(),
+  log,
   logError: vi.fn()
 }));
 
@@ -62,10 +67,13 @@ vi.mock('../../../src/services/FileWatchPool', () => ({
 }));
 
 describe('LogSyncService', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     showInformationMessage.mockClear();
     showInformationMessage.mockResolvedValue(undefined);
+    log.mockClear();
     MockFileWatchPool.mockClear();
+    const vscode = await import('vscode');
+    (vscode.env as { remoteName?: string }).remoteName = undefined;
   });
 
   afterEach(() => {
@@ -121,6 +129,104 @@ describe('LogSyncService', () => {
       actionCommand: 'prompter.open'
     });
     expect(showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a local VS Code notification instead of host audio when running in a remote extension host', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    state.settings.language = 'zh-CN';
+    state.settings.notifyOnFinish = true;
+    state.settings.completionTone = 'chime';
+    state.cards = [
+      {
+        id: 'card-1',
+        title: 'Release wrap-up',
+        content: 'Summarize the shipped changes.',
+        status: 'active',
+        runtimeState: 'running',
+        groupId: 'release',
+        groupName: 'release',
+        groupColor: '#22c55e',
+        sourceType: 'codex',
+        sourceRef: 'session-1',
+        createdAt: '2026-04-08T10:00:00.000Z',
+        updatedAt: '2026-04-08T10:00:00.000Z',
+        dateBucket: '2026-04-08',
+        fileRefs: [],
+        justCompleted: false
+      }
+    ];
+
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      markCardCompletedFromLog: vi.fn().mockResolvedValue(undefined)
+    };
+
+    const vscode = await import('vscode');
+    (vscode.env as { remoteName?: string }).remoteName = 'ssh-remote';
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const { PrompterPanel } = await import('../../../src/panel/PrompterPanel');
+
+    await (service as any).handlePromptCompleted('session-1');
+
+    expect(PrompterPanel.playCompletionTone).not.toHaveBeenCalled();
+    expect(PrompterPanel.playCompletionToneInWebviewIfOpen).toHaveBeenCalledWith('chime');
+    expect(log).toHaveBeenCalledWith('[LogSyncService] Remote host -> local notification fallback: ssh-remote');
+    expect(showInformationMessage).toHaveBeenCalledWith('Prompt 已完成: Release wrap-up...', '查看');
+    expect(PrompterPanel.showToast).toHaveBeenCalledWith({
+      id: 'prompt-completed:card-1',
+      kind: 'success',
+      message: 'Prompt 已完成: Release wrap-up...',
+      actionLabel: '查看',
+      actionCommand: 'prompter.open'
+    });
+    (vscode.env as { remoteName?: string }).remoteName = undefined;
+  });
+
+  it('uses local webview audio on the current machine when the panel is open in a remote extension host', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    state.settings.language = 'en';
+    state.settings.notifyOnFinish = true;
+    state.settings.completionTone = 'chime';
+    state.cards = [
+      {
+        id: 'card-1',
+        title: 'Release wrap-up',
+        content: 'Summarize the shipped changes.',
+        status: 'active',
+        runtimeState: 'running',
+        groupId: 'release',
+        groupName: 'release',
+        groupColor: '#22c55e',
+        sourceType: 'codex',
+        sourceRef: 'session-1',
+        createdAt: '2026-04-08T10:00:00.000Z',
+        updatedAt: '2026-04-08T10:00:00.000Z',
+        dateBucket: '2026-04-08',
+        fileRefs: [],
+        justCompleted: false
+      }
+    ];
+
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      markCardCompletedFromLog: vi.fn().mockResolvedValue(undefined)
+    };
+
+    const vscode = await import('vscode');
+    (vscode.env as { remoteName?: string }).remoteName = 'ssh-remote';
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const { PrompterPanel } = await import('../../../src/panel/PrompterPanel');
+    vi.mocked(PrompterPanel.playCompletionToneInWebviewIfOpen).mockReturnValueOnce(true);
+
+    await (service as any).handlePromptCompleted('session-1');
+
+    expect(PrompterPanel.playCompletionTone).not.toHaveBeenCalled();
+    expect(PrompterPanel.playCompletionToneInWebviewIfOpen).toHaveBeenCalledWith('chime');
+    expect(log).toHaveBeenCalledWith('[LogSyncService] Remote host -> local webview audio: ssh-remote');
+    expect(showInformationMessage).toHaveBeenCalledWith('Prompt completed: Release wrap-up...', 'View');
+    (vscode.env as { remoteName?: string }).remoteName = undefined;
   });
 
   it('plays the configured completion tone when a prompt finishes', async () => {

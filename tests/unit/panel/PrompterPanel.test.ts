@@ -371,6 +371,41 @@ describe('PrompterPanel', () => {
     expect(execFile).toHaveBeenCalled();
   });
 
+  it('uses active webview playback when explicitly requested and the panel is open', async () => {
+    const postMessage = vi.fn().mockResolvedValue(true);
+    const vscode = await import('vscode');
+
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValue(
+      createMockPanel(postMessage, () => createDisposable())
+    );
+
+    const repository = {
+      getState: vi.fn().mockResolvedValue(createInitialState('2026-04-16T09:00:00.000Z'))
+    };
+
+    await PrompterPanel.createOrShow({} as never, repository as never);
+    postMessage.mockClear();
+
+    const played = PrompterPanel.playCompletionToneInWebviewIfOpen('ding');
+
+    expect(played).toBe(true);
+    expect(log).toHaveBeenCalledWith('[PrompterPanel] Completion tone requested: ding, using active webview playback');
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'audio:play',
+      payload: { tone: 'ding' }
+    });
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it('returns false when explicit webview playback is requested without an open panel', () => {
+    PrompterPanel['currentPanel'] = undefined;
+
+    const played = PrompterPanel.playCompletionToneInWebviewIfOpen('chime');
+
+    expect(played).toBe(false);
+    expect(log).toHaveBeenCalledWith('[PrompterPanel] Webview tone requested for chime, but no active panel is open');
+  });
+
   it('logs Linux fallback transitions when builtin tone playback falls back from aplay to paplay to shell bell', () => {
     Object.defineProperty(process, 'platform', { value: 'linux' });
     execFile.mockImplementation((cmd: string, _args: string[], callback?: (error: Error | null) => void) => {

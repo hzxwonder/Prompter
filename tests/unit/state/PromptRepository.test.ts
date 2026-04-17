@@ -525,7 +525,47 @@ describe('PromptRepository', () => {
     ]);
   });
 
-  it('updates an existing imported card with the same sourceRef instead of creating a duplicate card', async () => {
+  it('updates an existing imported card when session id, timestamp, and normalized content match', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
+    const repo = await PromptRepository.create(dir, () => '2026-04-08T10:10:00.000Z');
+
+    await repo.saveImportedCard({
+      title: 'Prompt one',
+      content: 'Inspect flaky snapshots',
+      groupName: 'codex-session-1',
+      sourceType: 'codex',
+      sourceRef: 'codex-session-1:turn-1',
+      status: 'active',
+      runtimeState: 'running',
+      createdAt: '2026-04-08T09:00:00.000Z'
+    });
+
+    await repo.saveImportedCard({
+      title: 'Prompt one refined',
+      content: 'Inspect flaky snapshots',
+      groupName: 'codex-session-1',
+      sourceType: 'codex',
+      sourceRef: 'codex-session-1:turn-1',
+      status: 'completed',
+      runtimeState: 'finished',
+      createdAt: '2026-04-08T09:00:00.000Z'
+    });
+
+    const snapshot = await repo.getState();
+    const matchingCards = snapshot.cards.filter((card) => card.sourceRef === 'codex-session-1:turn-1');
+
+    expect(matchingCards).toHaveLength(1);
+    expect(matchingCards[0]).toEqual(
+      expect.objectContaining({
+        title: 'Prompt one refined',
+        content: 'Inspect flaky snapshots',
+        status: 'completed',
+        runtimeState: 'finished'
+      })
+    );
+  });
+
+  it('creates a new imported card when only sourceRef matches but normalized prompt content differs', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
     const repo = await PromptRepository.create(dir, () => '2026-04-08T10:10:00.000Z');
 
@@ -554,15 +594,7 @@ describe('PromptRepository', () => {
     const snapshot = await repo.getState();
     const matchingCards = snapshot.cards.filter((card) => card.sourceRef === 'codex-session-1:turn-1');
 
-    expect(matchingCards).toHaveLength(1);
-    expect(matchingCards[0]).toEqual(
-      expect.objectContaining({
-        title: 'Prompt one refined',
-        content: 'Inspect flaky snapshots with history import',
-        status: 'completed',
-        runtimeState: 'finished'
-      })
-    );
+    expect(matchingCards).toHaveLength(2);
   });
 
   it('deduplicates imported history cards by session id, timestamp, and prompt content when sourceRef changes', async () => {

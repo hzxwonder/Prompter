@@ -70,6 +70,20 @@ export class PrompterPanel {
     PrompterPanel.playHostBuiltinTone(tone);
   }
 
+  static playCompletionToneInWebviewIfOpen(tone: BuiltinTone): boolean {
+    if (!PrompterPanel.currentPanel) {
+      log(`[PrompterPanel] Webview tone requested for ${tone}, but no active panel is open`);
+      return false;
+    }
+
+    log(`[PrompterPanel] Completion tone requested: ${tone}, using active webview playback`);
+    PrompterPanel.currentPanel.panel.webview.postMessage({
+      type: 'audio:play',
+      payload: { tone }
+    });
+    return true;
+  }
+
   static showToast(payload: PrompterToastMessage): Thenable<boolean> | undefined {
     return PrompterPanel.currentPanel?.panel.webview.postMessage({
       type: 'toast:show',

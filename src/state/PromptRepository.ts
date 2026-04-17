@@ -419,10 +419,6 @@ function findMatchingImportedCardIndex(
       return false;
     }
 
-    if (input.sourceRef && card.sourceRef === input.sourceRef) {
-      return true;
-    }
-
     if (!targetSessionId) {
       return false;
     }

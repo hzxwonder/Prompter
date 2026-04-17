@@ -773,10 +773,12 @@ export class LogSyncService {
           for (const id of autoCompletedIds) {
             const card = latestState.cards.find((c) => c.id === id);
             if (card) {
+              const message = localeText.host.notifications.promptAutoCompleted(card.title.slice(0, 30));
+              await this.showLocalNotificationIfRemote(message, localeText.host.viewAction);
               await this.showRoutineToast({
                 id: `prompt-auto-completed:${card.id}`,
                 kind: 'success',
-                message: localeText.host.notifications.promptAutoCompleted(card.title.slice(0, 30)),
+                message,
                 actionLabel: localeText.host.viewAction
               });
             }
@@ -898,6 +900,10 @@ export class LogSyncService {
 
       if (updatedState.settings.notifyOnFinish) {
         const localeText = getLocaleText(updatedState.settings.language);
+        await this.showLocalNotificationIfRemote(
+          localeText.host.notifications.promptCompletedGeneric,
+          localeText.host.viewAction
+        );
         await this.showRoutineToast({
           id: `prompt-completed-generic:${Date.now()}`,
           kind: 'success',
@@ -909,6 +915,18 @@ export class LogSyncService {
   }
 
   private playToneFromSettings(tone: string, customPath: string): void {
+    if (this.isRemoteExtensionHost()) {
+      if (tone !== 'off' && tone !== 'custom' && BUILTIN_TONES.has(tone)) {
+        const playedInWebview = PrompterPanel.playCompletionToneInWebviewIfOpen(tone as BuiltinTone);
+        if (playedInWebview) {
+          log(`[LogSyncService] Remote host -> local webview audio: ${vscode.env.remoteName}`);
+          return;
+        }
+      }
+      log(`[LogSyncService] Remote host -> local notification fallback: ${vscode.env.remoteName}`);
+      log(`[LogSyncService] Skipping host audio playback in remote extension host: ${vscode.env.remoteName}`);
+      return;
+    }
     if (tone === 'off') return;
     if (tone === 'custom') {
       if (customPath) {
@@ -934,6 +952,24 @@ export class LogSyncService {
       actionLabel: options.actionLabel,
       actionCommand: options.actionLabel ? 'prompter.open' : undefined
     });
+  }
+
+  private isRemoteExtensionHost(): boolean {
+    return Boolean(vscode.env.remoteName);
+  }
+
+  private async showLocalNotificationIfRemote(message: string, actionLabel?: string): Promise<void> {
+    if (!this.isRemoteExtensionHost()) {
+      return;
+    }
+
+    const selection = actionLabel
+      ? await vscode.window.showInformationMessage(message, actionLabel)
+      : await vscode.window.showInformationMessage(message);
+
+    if (selection === actionLabel && actionLabel) {
+      await vscode.commands.executeCommand('prompter.open');
+    }
   }
 
   private async updateActiveCardTimestamps(): Promise<void> {
@@ -1038,10 +1074,12 @@ export class LogSyncService {
     // 发送通知
     if (updatedState.settings.notifyOnFinish) {
       const localeText = getLocaleText(updatedState.settings.language);
+      const message = localeText.host.notifications.promptCompleted(card.title.slice(0, 30));
+      await this.showLocalNotificationIfRemote(message, localeText.host.viewAction);
       await this.showRoutineToast({
         id: `prompt-completed:${card.id}`,
         kind: 'success',
-        message: localeText.host.notifications.promptCompleted(card.title.slice(0, 30)),
+        message,
         actionLabel: localeText.host.viewAction
       });
     }
