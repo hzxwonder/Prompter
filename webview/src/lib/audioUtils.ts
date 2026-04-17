@@ -1,20 +1,73 @@
 import type { BuiltinTone } from '../../../src/shared/models';
 
 let audioContext: AudioContext | null = null;
+let unlockHandlersBound = false;
+const pendingBuiltinTones: BuiltinTone[] = [];
+
+function getAudioContextCtor(): typeof AudioContext | undefined {
+  if (typeof window === 'undefined') {
+    return undefined;
+  }
+
+  return window.AudioContext ?? (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+}
 
 function getCtx(): AudioContext {
   if (!audioContext) {
-    audioContext = new AudioContext();
+    const AudioContextCtor = getAudioContextCtor();
+    if (!AudioContextCtor) {
+      throw new Error('AudioContext is not available');
+    }
+
+    audioContext = new AudioContextCtor();
   }
   return audioContext;
 }
 
-function ensureResumed(ctx: AudioContext, fn: () => void): void {
-  if (ctx.state === 'suspended') {
-    void ctx.resume().then(fn);
-  } else {
-    fn();
+function flushPendingBuiltinTones(ctx: AudioContext): void {
+  if (ctx.state !== 'running' || pendingBuiltinTones.length === 0) {
+    return;
   }
+
+  const queued = pendingBuiltinTones.splice(0, pendingBuiltinTones.length);
+  for (const tone of queued) {
+    TONE_PLAYERS[tone]?.(ctx);
+  }
+}
+
+function tryResumeContext(ctx: AudioContext): void {
+  if (ctx.state === 'closed') {
+    return;
+  }
+
+  void ctx.resume()
+    .then(() => {
+      flushPendingBuiltinTones(ctx);
+    })
+    .catch(() => {
+      // Resume still needs a user gesture.
+    });
+}
+
+function ensureUnlockHandlersBound(): void {
+  if (unlockHandlersBound || typeof window === 'undefined') {
+    return;
+  }
+
+  const unlock = () => {
+    try {
+      const ctx = getCtx();
+      tryResumeContext(ctx);
+    } catch {
+      // Audio not available
+    }
+  };
+
+  for (const eventName of ['pointerdown', 'keydown']) {
+    window.addEventListener(eventName, unlock, { passive: true });
+  }
+
+  unlockHandlersBound = true;
 }
 
 // ── Soft bell: warm descending tone with harmonic ──────────────────────────
@@ -89,12 +142,23 @@ const TONE_PLAYERS: Record<BuiltinTone, (ctx: AudioContext) => void> = {
   ding
 };
 
+export function initializeAudioPlayback(): void {
+  ensureUnlockHandlersBound();
+}
+
 export function playBuiltinTone(name: BuiltinTone): void {
   try {
+    ensureUnlockHandlersBound();
     const ctx = getCtx();
     const play = TONE_PLAYERS[name];
     if (!play) return;
-    ensureResumed(ctx, () => play(ctx));
+    if (ctx.state === 'running') {
+      play(ctx);
+      return;
+    }
+
+    pendingBuiltinTones.push(name);
+    tryResumeContext(ctx);
   } catch {
     // Audio not available
   }

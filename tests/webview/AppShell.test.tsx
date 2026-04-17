@@ -830,4 +830,71 @@ describe('App shell', () => {
 
     expect(screen.queryByText(/shortcut saved\./i)).not.toBeInTheDocument();
   });
+
+  it('replays a queued completion tone after the first user gesture unlocks audio', async () => {
+    let audioUnlocked = false;
+    let oscillatorStarts = 0;
+
+    class FakeAudioContext {
+      state: 'suspended' | 'running' | 'closed' = 'suspended';
+      currentTime = 0;
+      destination = {};
+
+      resume = vi.fn(async () => {
+        if (audioUnlocked) {
+          this.state = 'running';
+        }
+      });
+
+      createOscillator() {
+        return {
+          type: 'sine',
+          frequency: {
+            setValueAtTime: vi.fn(),
+            exponentialRampToValueAtTime: vi.fn()
+          },
+          connect: vi.fn(),
+          start: vi.fn(() => {
+            oscillatorStarts += 1;
+          }),
+          stop: vi.fn()
+        };
+      }
+
+      createGain() {
+        return {
+          gain: {
+            setValueAtTime: vi.fn(),
+            exponentialRampToValueAtTime: vi.fn()
+          },
+          connect: vi.fn()
+        };
+      }
+    }
+
+    vi.stubGlobal('AudioContext', FakeAudioContext);
+
+    render(
+      <App
+        initialState={createInitialState('2026-04-08T10:00:00.000Z')}
+        lastMessage={{
+          type: 'audio:play',
+          payload: { tone: 'ding' }
+        }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(oscillatorStarts).toBe(0);
+    });
+
+    audioUnlocked = true;
+    fireEvent.pointerDown(window);
+
+    await waitFor(() => {
+      expect(oscillatorStarts).toBe(1);
+    });
+
+    vi.unstubAllGlobals();
+  });
 });

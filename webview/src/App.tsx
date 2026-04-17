@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { PromptCard, PrompterCommandId, PrompterState, PrompterView } from '../../src/shared/models';
 import type { ExtensionToWebviewMessage } from '../../src/shared/messages';
 import { postMessage } from './api/vscode';
-import { playBuiltinTone } from './lib/audioUtils';
+import { initializeAudioPlayback, playBuiltinTone } from './lib/audioUtils';
 import { SidebarNav } from './components/SidebarNav';
 import { ToastViewport } from './components/ToastViewport';
 import { usePrompterStore } from './store/usePrompterStore';
@@ -51,6 +51,11 @@ export function App({
   const workspaceCards = state.workspaceCards.length > 0 || state.cards.length === 0
     ? state.workspaceCards
     : state.cards;
+
+  useEffect(() => {
+    initializeAudioPlayback();
+  }, []);
+
   useEffect(() => {
     if (lastMessage?.type === 'draft:saved') {
       markDraftSaved(lastMessage.payload.card as PromptCard, lastMessage.payload.state);
