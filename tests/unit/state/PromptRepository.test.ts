@@ -74,6 +74,22 @@ describe('PromptRepository', () => {
     expect(snapshot.settings.notifyOnFinish).toBe(false);
   });
 
+  it('defaults experimental prompt pause to disabled when persisted settings omit the field', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
+    const persistedSettings: Record<string, unknown> = {
+      ...createInitialState('2026-04-08T10:00:00.000Z').settings,
+      notifyOnFinish: false
+    };
+    delete persistedSettings.enableExperimentalPromptPause;
+
+    await writeFile(join(dir, 'settings.json'), JSON.stringify(persistedSettings), 'utf8');
+
+    const repo = await PromptRepository.create(dir, () => '2026-04-08T10:00:00.000Z');
+    const snapshot = await repo.getState();
+
+    expect(snapshot.settings.enableExperimentalPromptPause).toBe(false);
+  });
+
   it('loads workspace cards from today_cards.json during repository creation', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
     const todayCard = {
@@ -805,6 +821,7 @@ describe('PromptRepository', () => {
 
     await repo.updateSettings({
       notifyOnFinish: false,
+      enableExperimentalPromptPause: false,
       dataDir: '/tmp/prompter-custom',
       logSources: {
         'claude-code': { enabled: true, path: '/logs/claude' },
@@ -815,6 +832,7 @@ describe('PromptRepository', () => {
 
     let snapshot = await repo.getState();
     expect(snapshot.settings.notifyOnFinish).toBe(false);
+    expect(snapshot.settings.enableExperimentalPromptPause).toBe(false);
     expect(snapshot.settings.dataDir).toBe('/tmp/prompter-custom');
     expect(snapshot.settings.logSources.codex.enabled).toBe(false);
 
@@ -826,6 +844,7 @@ describe('PromptRepository', () => {
     expect(snapshot.modularPrompts).toEqual([]);
     expect(snapshot.dailyStats).toEqual([]);
     expect(snapshot.settings.notifyOnFinish).toBe(false);
+    expect(snapshot.settings.enableExperimentalPromptPause).toBe(false);
     expect(snapshot.settings.dataDir).toBe('/tmp/prompter-custom');
 
     const files = await readdir(dir);

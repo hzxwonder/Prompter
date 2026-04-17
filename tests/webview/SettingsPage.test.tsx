@@ -41,6 +41,7 @@ describe('SettingsPage', () => {
 
     expect(screen.getByRole('heading', { name: '通用' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '通知' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '实验功能' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '存储与日志' })).toBeInTheDocument();
 
     expect(screen.getByLabelText('语言')).toHaveValue('zh-CN');
@@ -48,6 +49,7 @@ describe('SettingsPage', () => {
     expect(screen.queryByLabelText('默认导入方式')).not.toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: 'Prompt 完成时通知' })).not.toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Prompt 暂停时通知' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: '启用 Prompt 暂停实验功能' })).not.toBeChecked();
     expect(screen.getByLabelText('完成提示音')).toHaveValue('off');
     expect(screen.getByLabelText('数据目录')).toHaveValue('~/prompter/cache');
     expect(screen.queryByRole('button', { name: '应用数据目录' })).not.toBeInTheDocument();
@@ -72,12 +74,14 @@ describe('SettingsPage', () => {
 
     expect(screen.getByRole('heading', { name: 'General' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Notifications' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Experimental' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Storage & logs' })).toBeInTheDocument();
     expect(screen.getByText('Choose the interface language.')).toBeInTheDocument();
     expect(screen.getByLabelText('Language')).toHaveValue('en');
     expect(screen.queryByLabelText('Theme')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Default import mode')).not.toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: 'Notify when a prompt pauses' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Enable experimental prompt pause' })).not.toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Enable claude-code logs' })).toBeChecked();
     expect(screen.getByRole('heading', { name: 'Cache' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Clear Cache' })).toBeInTheDocument();
@@ -137,6 +141,7 @@ describe('SettingsPage', () => {
     await user.selectOptions(screen.getByLabelText('语言'), 'en');
     await user.click(screen.getByRole('checkbox', { name: 'Notify when a prompt finishes' }));
     await user.click(screen.getByRole('checkbox', { name: 'Notify when a prompt pauses' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Enable experimental prompt pause' }));
     await user.selectOptions(screen.getByLabelText('Completion tone'), 'soft-bell');
     await user.clear(screen.getByLabelText('Data directory'));
     await user.type(screen.getByLabelText('Data directory'), '/tmp/prompter');
@@ -149,6 +154,7 @@ describe('SettingsPage', () => {
     expect(screen.queryByLabelText('Default import mode')).not.toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: 'Notify when a prompt finishes' })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Notify when a prompt pauses' })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Enable experimental prompt pause' })).toBeChecked();
     expect(screen.getByLabelText('Completion tone')).toHaveValue('soft-bell');
     expect(screen.getByLabelText('Data directory')).toHaveValue('/tmp/prompter');
     expect(screen.getByRole('checkbox', { name: 'Enable codex logs' })).toBeChecked();

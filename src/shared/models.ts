@@ -116,6 +116,7 @@ export interface PrompterSettings {
   language: 'zh-CN' | 'en';
   theme: ThemeMode;
   defaultImportMode: ImportPathMode;
+  enableExperimentalPromptPause: boolean;
   notifyOnFinish: boolean;
   notifyOnPause: boolean;
   completionTone: CompletionTone;
@@ -202,6 +203,7 @@ export function createInitialState(nowIso: string, _platform?: string): Prompter
       language: 'zh-CN',
       theme: 'system',
       defaultImportMode: 'absolute',
+      enableExperimentalPromptPause: false,
       notifyOnFinish: true,
       notifyOnPause: true,
       completionTone: 'soft-bell',

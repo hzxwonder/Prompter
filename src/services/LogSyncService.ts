@@ -21,8 +21,8 @@ const WATCH_ROOTS = [
 ];
 const AUTO_COMPLETE_AFTER_MS = 2 * 60 * 60 * 1000;
 const AWAITING_CONFIRMATION_MS = 20 * 60 * 1000;
-const PAUSE_INITIAL_DELAY_MS = 5 * 1000;
-const PAUSE_UNCHANGED_ACTIVITY_MS = 20 * 1000;
+const PAUSE_INITIAL_DELAY_MS = 10 * 1000;
+const PAUSE_UNCHANGED_ACTIVITY_MS = 45 * 1000;
 
 const HISTORY_BACKFILL_WORKER_COUNT = 3;
 const HISTORY_LOOKBACK_DAYS = 30;
@@ -1225,6 +1225,11 @@ export class LogSyncService {
     }
 
     const state = await this.repository.getState();
+    if (!this.isExperimentalPromptPauseEnabled(state)) {
+      this.pauseMonitors.clear();
+      return;
+    }
+
     const nowMs = Date.now();
 
     for (const sourceRef of sourceRefs) {
@@ -1273,12 +1278,18 @@ export class LogSyncService {
   }
 
   private async reconcilePausedPromptStates(): Promise<void> {
+    const state = await this.repository.getState();
+    const nowMs = Date.now();
+
+    if (!this.isExperimentalPromptPauseEnabled(state)) {
+      await this.restorePausedCardsWhenPromptPauseDisabled(state, nowMs);
+      return;
+    }
+
     if (!this.fileWatchPool || this.pauseMonitors.size === 0) {
       return;
     }
 
-    const state = await this.repository.getState();
-    const nowMs = Date.now();
     let changed = false;
 
     for (const [monitorKey, monitor] of this.pauseMonitors) {
@@ -1390,6 +1401,37 @@ export class LogSyncService {
       if (monitor.sourceRef === sourceRef) {
         this.pauseMonitors.delete(monitorKey);
       }
+    }
+  }
+
+  private isExperimentalPromptPauseEnabled(
+    state: Awaited<ReturnType<PromptRepository['getState']>>
+  ): boolean {
+    return state.settings.enableExperimentalPromptPause === true;
+  }
+
+  private async restorePausedCardsWhenPromptPauseDisabled(
+    state: Awaited<ReturnType<PromptRepository['getState']>>,
+    nowMs: number
+  ): Promise<void> {
+    let changed = false;
+
+    for (const card of state.cards) {
+      if (card.status !== 'active' || card.runtimeState !== 'paused' || !card.sourceRef) {
+        continue;
+      }
+      if (card.sourceType !== 'claude-code' && card.sourceType !== 'codex') {
+        continue;
+      }
+
+      await this.repository.updateCardRuntimeState(card.sourceRef, 'running', new Date(nowMs).toISOString());
+      changed = true;
+    }
+
+    this.pauseMonitors.clear();
+
+    if (changed) {
+      await PrompterPanel.refresh(this.repository);
     }
   }
 }

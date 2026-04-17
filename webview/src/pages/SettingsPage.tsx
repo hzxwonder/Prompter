@@ -129,6 +129,26 @@ export function SettingsPage({
           </div>
         </section>
 
+        <section className="settings-section" aria-labelledby="settings-experimental-heading">
+          <div className="panel-header">
+            <div>
+              <h2 id="settings-experimental-heading">{localeText.settings.experimentalHeading}</h2>
+              <p className="workspace-subtitle">{localeText.settings.experimentalSubtitle}</p>
+            </div>
+          </div>
+          <div className="settings-section-body">
+            <label className="settings-toggle">
+              <input
+                type="checkbox"
+                checked={settings.enableExperimentalPromptPause}
+                onChange={(event) => onSettingsChange({ enableExperimentalPromptPause: event.target.checked })}
+              />
+              <span>{localeText.settings.enableExperimentalPromptPause}</span>
+            </label>
+            <p className="workspace-subtitle">{localeText.settings.enableExperimentalPromptPauseHint}</p>
+          </div>
+        </section>
+
         <section className="settings-section settings-section-wide" aria-labelledby="settings-storage-heading">
           <div className="panel-header">
             <div>

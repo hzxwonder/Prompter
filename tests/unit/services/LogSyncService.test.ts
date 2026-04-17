@@ -2106,6 +2106,7 @@ describe('LogSyncService', () => {
   it('pauses the latest active prompt after 10s plus 45s of unchanged watch-pool activity', async () => {
     const state = createInitialState('2026-04-17T04:00:00.000Z');
     state.settings.language = 'en';
+    state.settings.enableExperimentalPromptPause = true;
     state.settings.notifyOnPause = true;
     state.settings.completionTone = 'chime';
     state.cards = [
@@ -2190,8 +2191,53 @@ describe('LogSyncService', () => {
     }
   });
 
+  it('does not register pause monitors when the experimental prompt pause setting is disabled', async () => {
+    const state = createInitialState('2026-04-17T04:00:00.000Z');
+    state.settings.enableExperimentalPromptPause = false;
+    state.cards = [
+      {
+        id: 'card-1',
+        title: 'Disabled pause',
+        content: 'Do not monitor this prompt.',
+        status: 'active',
+        runtimeState: 'running',
+        groupId: 'codex:session-1',
+        groupName: 'session-1',
+        groupColor: '#22c55e',
+        sourceType: 'codex',
+        sourceRef: 'session-1:turn-1',
+        createdAt: '2026-04-17T03:59:00.000Z',
+        updatedAt: '2026-04-17T03:59:00.000Z',
+        lastActiveAt: '2026-04-17T03:59:00.000Z',
+        dateBucket: '2026-04-17',
+        fileRefs: [],
+        justCompleted: false
+      }
+    ];
+
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state)
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    (service as any).fileWatchPool = {
+      getPoolSnapshot: vi.fn(() => [{
+        path: '/tmp/session-1.jsonl',
+        source: 'codex' as const,
+        lastSize: 120,
+        lastMtimeMs: 1000,
+        lastChangedAt: 1000
+      }])
+    };
+
+    await (service as any).registerPauseTriggers(['session-1:turn-1']);
+
+    expect((service as any).pauseMonitors.size).toBe(0);
+  });
+
   it('resets the pause timer when a new trigger arrives for the same session', async () => {
     const state = createInitialState('2026-04-17T04:00:00.000Z');
+    state.settings.enableExperimentalPromptPause = true;
     state.cards = [
       {
         id: 'card-1',
@@ -2252,6 +2298,7 @@ describe('LogSyncService', () => {
 
   it('returns a paused prompt to running when watch-pool activity changes again', async () => {
     const state = createInitialState('2026-04-17T04:00:00.000Z');
+    state.settings.enableExperimentalPromptPause = true;
     state.cards = [
       {
         id: 'card-1',
@@ -2319,6 +2366,83 @@ describe('LogSyncService', () => {
         'running',
         '1970-01-01T00:00:55.000Z'
       );
+    } finally {
+      Date.now = originalDateNow;
+    }
+  });
+
+  it('keeps prompts out of the paused state when the experimental prompt pause setting is disabled', async () => {
+    const state = createInitialState('2026-04-17T04:00:00.000Z');
+    state.settings.enableExperimentalPromptPause = false;
+    state.cards = [
+      {
+        id: 'card-1',
+        title: 'Paused prompt',
+        content: 'This should resume immediately.',
+        status: 'active',
+        runtimeState: 'paused',
+        groupId: 'codex:session-1',
+        groupName: 'session-1',
+        groupColor: '#22c55e',
+        sourceType: 'codex',
+        sourceRef: 'session-1:turn-1',
+        createdAt: '2026-04-17T03:59:00.000Z',
+        updatedAt: '2026-04-17T04:10:00.000Z',
+        lastActiveAt: '2026-04-17T04:00:00.000Z',
+        dateBucket: '2026-04-17',
+        fileRefs: [],
+        justCompleted: false
+      }
+    ];
+
+    const repository = {
+      getState: vi.fn().mockImplementation(async () => state),
+      updateCardRuntimeState: vi.fn().mockImplementation(async (_sourceRef: string, runtimeState: 'running' | 'paused', updatedAt: string) => {
+        state.cards[0] = {
+          ...state.cards[0],
+          runtimeState,
+          updatedAt
+        };
+      })
+    };
+
+    let nowMs = 75_000;
+    const originalDateNow = Date.now;
+    Date.now = () => nowMs;
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    (service as any).pauseMonitors = new Map([
+      ['codex:session-1', {
+        source: 'codex',
+        sessionId: 'session-1',
+        sourceRef: 'session-1:turn-1',
+        waitUntilMs: 10_000,
+        lastActivityChangeAtMs: 10_000,
+        lastObservedSize: 120,
+        lastObservedMtimeMs: 1000,
+        isPaused: true,
+        hasNotifiedPause: true
+      }]
+    ]);
+    (service as any).fileWatchPool = {
+      getPoolSnapshot: vi.fn(() => [{
+        path: '/tmp/session-1.jsonl',
+        source: 'codex' as const,
+        lastSize: 120,
+        lastMtimeMs: 1000,
+        lastChangedAt: 1000
+      }])
+    };
+
+    try {
+      await (service as any).reconcilePausedPromptStates();
+
+      expect(repository.updateCardRuntimeState).toHaveBeenCalledWith(
+        'session-1:turn-1',
+        'running',
+        '1970-01-01T00:01:15.000Z'
+      );
+      expect((service as any).pauseMonitors.size).toBe(0);
     } finally {
       Date.now = originalDateNow;
     }
