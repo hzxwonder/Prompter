@@ -44,11 +44,20 @@ function getDisplayGroupName(card: PromptCardModel): string {
   return card.groupName;
 }
 
-function formatStatusLabel(status: PromptStatus, awaitingConfirmation: boolean, language: PrompterSettings['language']): string {
+function formatStatusLabel(
+  status: PromptStatus,
+  runtimeState: PromptCardModel['runtimeState'],
+  awaitingConfirmation: boolean,
+  language: PrompterSettings['language']
+): string {
   const localeText = getLocaleText(language);
 
   if (awaitingConfirmation) {
     return localeText.card.awaitingConfirmation;
+  }
+
+  if (status === 'active' && runtimeState === 'paused') {
+    return localeText.card.paused;
   }
 
   return localeText.laneLabels[status];
@@ -98,7 +107,13 @@ export function PromptCard({
   const contentRef = useRef<HTMLParagraphElement>(null);
   // Whether the content is visually clamped (determined by DOM measurement)
   const [isOverflowing, setIsOverflowing] = useState(needsExpandButton(card.content));
-  const statusLabel = formatStatusLabel(card.status, card.justCompleted || showAwaitingConfirmation, language);
+  const isPaused = card.status === 'active' && card.runtimeState === 'paused';
+  const statusLabel = formatStatusLabel(
+    card.status,
+    card.runtimeState,
+    card.justCompleted || showAwaitingConfirmation,
+    language
+  );
 
   useEffect(() => {
     if (!isEditingGroup) {
@@ -166,7 +181,7 @@ export function PromptCard({
   return (
     <article
       draggable={draggable && !isEditingGroup}
-      className={`prompt-card status-${card.status}${card.justCompleted ? ' prompt-card--just-completed' : ''}${copied ? ' prompt-card--copied' : ''}`}
+      className={`prompt-card status-${card.status}${card.justCompleted ? ' prompt-card--just-completed' : ''}${isPaused ? ' prompt-card--paused' : ''}${copied ? ' prompt-card--copied' : ''}`}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
       onDragStart={(event: DragEvent<HTMLElement>) => {
@@ -185,7 +200,7 @@ export function PromptCard({
       {(showStatusBadge || showDeleteButton) && (
         <div className="prompt-card-topbar">
           {showStatusBadge ? (
-            <span className={`prompt-card-status-badge prompt-card-status-badge--${card.status}${card.justCompleted || showAwaitingConfirmation ? ' prompt-card-status-badge--awaiting' : ''}`}>
+            <span className={`prompt-card-status-badge prompt-card-status-badge--${card.status}${card.justCompleted || showAwaitingConfirmation ? ' prompt-card-status-badge--awaiting' : ''}${isPaused ? ' prompt-card-status-badge--paused' : ''}`}>
               {statusLabel}
             </span>
           ) : (

@@ -21,6 +21,8 @@ const WATCH_ROOTS = [
 ];
 const AUTO_COMPLETE_AFTER_MS = 2 * 60 * 60 * 1000;
 const AWAITING_CONFIRMATION_MS = 20 * 60 * 1000;
+const PAUSE_INITIAL_DELAY_MS = 5 * 1000;
+const PAUSE_UNCHANGED_ACTIVITY_MS = 20 * 1000;
 
 const HISTORY_BACKFILL_WORKER_COUNT = 3;
 const HISTORY_LOOKBACK_DAYS = 30;
@@ -38,6 +40,7 @@ interface ParserSyncResult {
   inserted: LogPrompt[];
   justCompletedSourceRefs: string[];
   silentlyCompletedSourceRefs: string[];
+  pauseTriggerSourceRefs: string[];
 }
 
 interface WatchPoolSnapshotEntry {
@@ -46,6 +49,18 @@ interface WatchPoolSnapshotEntry {
   lastSize: number;
   lastMtimeMs: number;
   lastChangedAt: number;
+}
+
+interface PauseMonitor {
+  source: 'claude-code' | 'codex';
+  sessionId: string;
+  sourceRef: string;
+  waitUntilMs: number;
+  lastActivityChangeAtMs: number;
+  lastObservedSize: number;
+  lastObservedMtimeMs: number;
+  isPaused: boolean;
+  hasNotifiedPause: boolean;
 }
 
 function getTodayBucket(now = new Date()): string {
@@ -84,6 +99,7 @@ export class LogSyncService {
   private historyBackfillInFlight = false;
   private pauseHistoryRequested = false;
   private foregroundBusyUntil = 0;
+  private pauseMonitors = new Map<string, PauseMonitor>();
   private parser: LogParser;
 
   constructor(
@@ -715,7 +731,8 @@ export class LogSyncService {
       const {
         inserted: newPrompts,
         justCompletedSourceRefs,
-        silentlyCompletedSourceRefs
+        silentlyCompletedSourceRefs,
+        pauseTriggerSourceRefs
       } = this.syncForegroundSessionsOnly();
       const restrictedTodayBucket = getTodayBucket();
 
@@ -731,6 +748,8 @@ export class LogSyncService {
             : {}
         );
       }
+
+      await this.registerPauseTriggers(pauseTriggerSourceRefs);
 
       // Handle prompts that just transitioned from running → completed
       for (const sourceRef of justCompletedSourceRefs) {
@@ -749,8 +768,14 @@ export class LogSyncService {
           (c) => c.sourceRef === sourceRef && c.status === 'active'
         );
         if (card) {
-          await this.repository.markCardCompletedFromLog(sourceRef, new Date().toISOString(), { justCompleted: false });
-          await PrompterPanel.refresh(this.repository);
+          const matchingLogPrompt = this.parser.getAllPrompts().find((prompt) => prompt.sourceRef === sourceRef);
+          if (matchingLogPrompt?.silentCompletion) {
+            await this.handlePromptCompleted(sourceRef, { justCompleted: false });
+          } else {
+            await this.repository.markCardCompletedFromLog(sourceRef, new Date().toISOString(), { justCompleted: false });
+            this.clearPauseMonitorForSourceRef(sourceRef);
+            await PrompterPanel.refresh(this.repository);
+          }
         }
       }
 
@@ -758,6 +783,7 @@ export class LogSyncService {
       // but whose card was never transitioned (e.g. transition was missed in a prior sync cycle)
       await this.reconcileStaleActiveCards();
       await this.reconcileMissingParsedPromptCards();
+      await this.reconcilePausedPromptStates();
 
       // Update lastActiveAt for active cards based on session file modification time
       await this.updateActiveCardTimestamps();
@@ -804,6 +830,7 @@ export class LogSyncService {
     const inserted: LogPrompt[] = [];
     const justCompletedSourceRefs = new Set<string>();
     const silentlyCompletedSourceRefs = new Set<string>();
+    const pauseTriggerSourceRefs = new Set<string>();
 
     const eligibleEntries = this.collectForegroundEntries(todayBucket, runningSessions);
 
@@ -817,12 +844,16 @@ export class LogSyncService {
       for (const sourceRef of result.silentlyCompletedSourceRefs) {
         silentlyCompletedSourceRefs.add(sourceRef);
       }
+      for (const sourceRef of result.pauseTriggerSourceRefs ?? []) {
+        pauseTriggerSourceRefs.add(sourceRef);
+      }
     }
 
     return {
       inserted,
       justCompletedSourceRefs: [...justCompletedSourceRefs],
-      silentlyCompletedSourceRefs: [...silentlyCompletedSourceRefs]
+      silentlyCompletedSourceRefs: [...silentlyCompletedSourceRefs],
+      pauseTriggerSourceRefs: [...pauseTriggerSourceRefs]
     };
   }
 
@@ -879,7 +910,10 @@ export class LogSyncService {
       // Case 1: card is still active but the log shows it's completed
       if (card.status === 'active') {
         log(`[LogSyncService] Reconciling stale active card: ${card.id}`);
-        await this.repository.markCardCompletedFromLog(card.id, matchingLogPrompt.completedAt!);
+        await this.repository.markCardCompletedFromLog(card.id, matchingLogPrompt.completedAt!, {
+          justCompleted: !matchingLogPrompt.silentCompletion
+        });
+        this.clearPauseMonitorForSourceRef(card.sourceRef ?? card.id);
         reconciled = true;
         continue;
       }
@@ -1090,7 +1124,9 @@ export class LogSyncService {
     // The next prompt in the same session will auto-acknowledge it via
     // completePreviousSameSessionPrompts.
     if (!options.skipNotify && prompt.status === 'completed' && prompt.completedAt && card.sourceRef) {
-      await this.repository.markCardCompletedFromLog(card.sourceRef, prompt.completedAt, { justCompleted: true });
+      await this.repository.markCardCompletedFromLog(card.sourceRef, prompt.completedAt, {
+        justCompleted: !prompt.silentCompletion
+      });
     }
 
     if (!options.skipRefresh) {
@@ -1108,7 +1144,7 @@ export class LogSyncService {
     }
   }
 
-  private async handlePromptCompleted(sourceRef: string): Promise<void> {
+  private async handlePromptCompleted(sourceRef: string, options?: { justCompleted?: boolean }): Promise<void> {
     log(`[LogSyncService] prompt 完成: ${sourceRef}`);
 
     const state = await this.repository.getState();
@@ -1119,7 +1155,10 @@ export class LogSyncService {
     }
 
     // 标记为已完成
-    await this.repository.markCardCompletedFromLog(sourceRef, new Date().toISOString());
+    await this.repository.markCardCompletedFromLog(sourceRef, new Date().toISOString(), {
+      justCompleted: options?.justCompleted ?? true
+    });
+    this.clearPauseMonitorForSourceRef(sourceRef);
 
     // 刷新 webview
     await PrompterPanel.refresh(this.repository);
@@ -1166,7 +1205,7 @@ export class LogSyncService {
       }
 
       // Complete active/running cards that are older than the new prompt
-      if (card.status !== 'active' || card.runtimeState !== 'running') {
+      if (card.status !== 'active' || card.runtimeState === 'finished') {
         continue;
       }
 
@@ -1176,6 +1215,181 @@ export class LogSyncService {
       }
 
       await this.repository.markCardCompletedFromLog(card.id, completedAt, { justCompleted: false });
+      this.clearPauseMonitorForSourceRef(card.sourceRef ?? card.id);
+    }
+  }
+
+  private async registerPauseTriggers(sourceRefs: string[]): Promise<void> {
+    if (sourceRefs.length === 0) {
+      return;
+    }
+
+    const state = await this.repository.getState();
+    const nowMs = Date.now();
+
+    for (const sourceRef of sourceRefs) {
+      const card = state.cards.find((entry) => entry.sourceRef === sourceRef && entry.status === 'active');
+      if (!card) {
+        continue;
+      }
+
+      const sessionId = resolveSessionId(card.sourceType, card.sourceRef);
+      if (!sessionId || (card.sourceType !== 'claude-code' && card.sourceType !== 'codex')) {
+        continue;
+      }
+
+      const snapshotEntry = this.getWatchSnapshotEntry(card.sourceType, sessionId);
+      if (!snapshotEntry) {
+        continue;
+      }
+
+      const monitorKey = `${card.sourceType}:${sessionId}`;
+      this.pauseMonitors.set(monitorKey, {
+        source: card.sourceType,
+        sessionId,
+        sourceRef: card.sourceRef!,
+        waitUntilMs: nowMs + PAUSE_INITIAL_DELAY_MS,
+        lastActivityChangeAtMs: nowMs + PAUSE_INITIAL_DELAY_MS,
+        lastObservedSize: snapshotEntry.lastSize,
+        lastObservedMtimeMs: snapshotEntry.lastMtimeMs,
+        isPaused: card.runtimeState === 'paused',
+        hasNotifiedPause: false
+      });
+    }
+  }
+
+  private getWatchSnapshotEntry(
+    source: 'claude-code' | 'codex',
+    sessionId: string
+  ): WatchPoolSnapshotEntry | undefined {
+    if (!this.fileWatchPool) {
+      return undefined;
+    }
+
+    const snapshot = this.fileWatchPool.getPoolSnapshot() as WatchPoolSnapshotEntry[];
+    return snapshot.find(
+      (entry) => entry.source === source && path.basename(entry.path, '.jsonl') === sessionId
+    );
+  }
+
+  private async reconcilePausedPromptStates(): Promise<void> {
+    if (!this.fileWatchPool || this.pauseMonitors.size === 0) {
+      return;
+    }
+
+    const state = await this.repository.getState();
+    const nowMs = Date.now();
+    let changed = false;
+
+    for (const [monitorKey, monitor] of this.pauseMonitors) {
+      const latestCard = this.findLatestActiveImportedCardForSession(state, monitor.source, monitor.sessionId);
+      if (!latestCard?.sourceRef) {
+        this.pauseMonitors.delete(monitorKey);
+        continue;
+      }
+
+      if (latestCard.sourceRef !== monitor.sourceRef) {
+        this.pauseMonitors.delete(monitorKey);
+        continue;
+      }
+
+      const snapshotEntry = this.getWatchSnapshotEntry(monitor.source, monitor.sessionId);
+      if (!snapshotEntry) {
+        continue;
+      }
+
+      const sizeChanged = snapshotEntry.lastSize !== monitor.lastObservedSize;
+      const mtimeChanged = snapshotEntry.lastMtimeMs !== monitor.lastObservedMtimeMs;
+
+      if (sizeChanged || mtimeChanged) {
+        monitor.lastObservedSize = snapshotEntry.lastSize;
+        monitor.lastObservedMtimeMs = snapshotEntry.lastMtimeMs;
+        monitor.lastActivityChangeAtMs = nowMs;
+
+        if (monitor.isPaused) {
+          await this.repository.updateCardRuntimeState(monitor.sourceRef, 'running', new Date(nowMs).toISOString());
+          monitor.isPaused = false;
+          monitor.hasNotifiedPause = false;
+          changed = true;
+        }
+        continue;
+      }
+
+      if (monitor.isPaused || nowMs < monitor.waitUntilMs) {
+        continue;
+      }
+
+      if (nowMs - monitor.lastActivityChangeAtMs < PAUSE_UNCHANGED_ACTIVITY_MS) {
+        continue;
+      }
+
+      await this.repository.updateCardRuntimeState(monitor.sourceRef, 'paused', new Date(nowMs).toISOString());
+      monitor.isPaused = true;
+      changed = true;
+
+      if (!monitor.hasNotifiedPause) {
+        await this.notifyPromptPaused(latestCard, new Date(nowMs).toISOString());
+        monitor.hasNotifiedPause = true;
+      }
+    }
+
+    if (changed) {
+      await PrompterPanel.refresh(this.repository);
+    }
+  }
+
+  private findLatestActiveImportedCardForSession(
+    state: Awaited<ReturnType<PromptRepository['getState']>>,
+    source: 'claude-code' | 'codex',
+    sessionId: string
+  ) {
+    let latestCard: Awaited<ReturnType<PromptRepository['getState']>>['cards'][number] | undefined;
+
+    for (const card of state.cards) {
+      if (card.status !== 'active') {
+        continue;
+      }
+      if (card.sourceType !== source) {
+        continue;
+      }
+      if (resolveSessionId(card.sourceType, card.sourceRef) !== sessionId) {
+        continue;
+      }
+      if (!latestCard || latestCard.createdAt < card.createdAt) {
+        latestCard = card;
+      }
+    }
+
+    return latestCard;
+  }
+
+  private async notifyPromptPaused(
+    card: Awaited<ReturnType<PromptRepository['getState']>>['cards'][number],
+    nowIso: string
+  ): Promise<void> {
+    const state = await this.repository.getState();
+    this.playToneFromSettings(state.settings.completionTone, state.settings.customTonePath);
+
+    if (!state.settings.notifyOnPause) {
+      return;
+    }
+
+    const localeText = getLocaleText(state.settings.language);
+    const message = localeText.host.notifications.promptPaused(card.title.slice(0, 30));
+    await this.showLocalNotificationIfRemote(message, localeText.host.viewAction);
+    await this.showRoutineToast({
+      id: `prompt-paused:${card.id}:${nowIso}`,
+      kind: 'info',
+      message,
+      actionLabel: localeText.host.viewAction
+    });
+  }
+
+  private clearPauseMonitorForSourceRef(sourceRef: string): void {
+    for (const [monitorKey, monitor] of this.pauseMonitors) {
+      if (monitor.sourceRef === sourceRef) {
+        this.pauseMonitors.delete(monitorKey);
+      }
     }
   }
 }

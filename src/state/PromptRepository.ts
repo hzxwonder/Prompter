@@ -1040,6 +1040,31 @@ export class PromptRepository {
     }
   }
 
+  async updateCardRuntimeState(
+    sourceRef: string,
+    runtimeState: PromptRuntimeState,
+    updatedAt: string = this.now()
+  ): Promise<void> {
+    let changed = false;
+    this.fullCards = this.fullCards.map((card) => {
+      if (card.sourceRef === sourceRef && card.status === 'active') {
+        changed = true;
+        return {
+          ...card,
+          status: 'active',
+          runtimeState,
+          updatedAt
+        };
+      }
+      return card;
+    });
+
+    if (changed) {
+      this.syncCardsProjection();
+      await this.persist();
+    }
+  }
+
   async acknowledgeCompletion(cardId: string): Promise<void> {
     const updatedAt = this.now();
     this.fullCards = this.fullCards.map((card) =>

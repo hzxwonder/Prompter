@@ -69,6 +69,7 @@ const text = {
       copied: '已复制',
       deletePrompt: '删除 prompt',
       createdAt: '创建于',
+      paused: '已暂停',
       awaitingConfirmation: '已完成，待确认',
       awaitingConfirmationAction: '已完成，待确认，点击移入已完成',
       expandPrompt: '展开完整 prompt',
@@ -181,6 +182,7 @@ const text = {
         reloadAfterInstallOrUpgrade: 'Prompter 已安装或更新。请重新加载窗口以完成扩展启用。',
         promptAutoCompleted: (title: string) => `Prompt 已自动完成: ${title}...`,
         promptCompleted: (title: string) => `Prompt 已完成: ${title}...`,
+        promptPaused: (title: string) => `Prompt 已暂停: ${title}...`,
         promptCompletedGeneric: 'Prompt 已完成',
         newRunningPrompt: (title: string) => `发现新的运行中 prompt: ${title}...`
       },
@@ -243,6 +245,7 @@ const text = {
       copied: 'Copied',
       deletePrompt: 'Delete prompt',
       createdAt: 'Created',
+      paused: 'Paused',
       awaitingConfirmation: 'Completed, awaiting confirmation',
       awaitingConfirmationAction: 'Completed, awaiting confirmation. Move to completed.',
       expandPrompt: 'Expand full prompt',
@@ -355,6 +358,7 @@ const text = {
         reloadAfterInstallOrUpgrade: 'Prompter was installed or updated. Reload the window to finish enabling the extension.',
         promptAutoCompleted: (title: string) => `Prompt auto-completed: ${title}...`,
         promptCompleted: (title: string) => `Prompt completed: ${title}...`,
+        promptPaused: (title: string) => `Prompt paused: ${title}...`,
         promptCompletedGeneric: 'Prompt completed',
         newRunningPrompt: (title: string) => `New running prompt detected: ${title}...`
       },

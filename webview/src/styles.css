@@ -513,6 +513,12 @@ select {
   box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.12), 0 8px 24px rgba(0, 0, 0, 0.12);
 }
 
+.prompt-card--paused {
+  border-color: rgba(245, 158, 11, 0.48);
+  background: rgba(245, 158, 11, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.14), 0 8px 24px rgba(0, 0, 0, 0.1);
+}
+
 .prompt-card-copied-badge {
   display: inline-block;
   align-self: flex-start;
@@ -553,6 +559,12 @@ select {
 .prompt-card-status-badge--active {
   background: rgba(59, 130, 246, 0.16);
   color: #93c5fd;
+}
+
+.prompt-card-status-badge--paused {
+  background: rgba(245, 158, 11, 0.16);
+  border-color: rgba(245, 158, 11, 0.32);
+  color: #fbbf24;
 }
 
 .prompt-card-status-badge--completed {

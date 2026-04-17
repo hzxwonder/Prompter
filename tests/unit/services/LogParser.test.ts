@@ -188,6 +188,147 @@ describe('LogParser Claude event filtering', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('marks the latest Claude prompt as completed for tool-use interruption events', () => {
+    const tempDir = fs.mkdtempSync(path.join(tmpdir(), 'prompter-claude-log-'));
+    const projectDir = path.join(tempDir, 'project-c');
+    const logPath = path.join(projectDir, 'session-3.jsonl');
+
+    try {
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(
+        logPath,
+        [
+          JSON.stringify({
+            type: 'user',
+            userType: 'external',
+            promptId: 'prompt-1',
+            timestamp: '2026-04-17T03:52:40.000Z',
+            message: {
+              role: 'user',
+              content: [{ type: 'text', text: 'Try reading the protected file.' }]
+            }
+          }),
+          JSON.stringify({
+            parentUuid: '62ffe213-a4cb-4709-8f1d-8018caf1d5b2',
+            isSidechain: false,
+            promptId: 'prompt-1',
+            type: 'user',
+            userType: 'external',
+            timestamp: '2026-04-17T03:52:58.000Z',
+            message: {
+              role: 'user',
+              content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }]
+            }
+          })
+        ].join('\n'),
+        'utf8'
+      );
+
+      const parser = new LogParser();
+      const prompts = (parser as any).extractClaudePrompts(logPath);
+
+      expect(prompts).toEqual([
+        expect.objectContaining({
+          sourceRef: 'session-3:prompt-1',
+          userInput: 'Try reading the protected file.',
+          completedAt: '2026-04-17T03:52:58.000Z'
+        })
+      ]);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('marks the latest Claude prompt as completed for stop_sequence', () => {
+    const tempDir = fs.mkdtempSync(path.join(tmpdir(), 'prompter-claude-log-'));
+    const projectDir = path.join(tempDir, 'project-d');
+    const logPath = path.join(projectDir, 'session-4.jsonl');
+
+    try {
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(
+        logPath,
+        [
+          JSON.stringify({
+            type: 'user',
+            userType: 'external',
+            promptId: 'prompt-1',
+            timestamp: '2026-04-17T03:50:00.000Z',
+            message: {
+              role: 'user',
+              content: [{ type: 'text', text: 'Inspect the current session state.' }]
+            }
+          }),
+          JSON.stringify({
+            type: 'assistant',
+            timestamp: '2026-04-17T03:50:05.000Z',
+            message: {
+              stop_reason: 'stop_sequence'
+            }
+          })
+        ].join('\n'),
+        'utf8'
+      );
+
+      const parser = new LogParser();
+      const prompts = (parser as any).extractClaudePrompts(logPath);
+
+      expect(prompts).toEqual([
+        expect.objectContaining({
+          sourceRef: 'session-4:prompt-1',
+          completedAt: '2026-04-17T03:50:05.000Z'
+        })
+      ]);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('records a pause trigger when Claude stops for tool_use', () => {
+    const tempDir = fs.mkdtempSync(path.join(tmpdir(), 'prompter-claude-log-'));
+    const projectDir = path.join(tempDir, 'project-e');
+    const logPath = path.join(projectDir, 'session-5.jsonl');
+
+    try {
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(
+        logPath,
+        [
+          JSON.stringify({
+            type: 'user',
+            userType: 'external',
+            promptId: 'prompt-1',
+            timestamp: '2026-04-17T03:52:40.000Z',
+            message: {
+              role: 'user',
+              content: [{ type: 'text', text: 'Try reading the protected file.' }]
+            }
+          }),
+          JSON.stringify({
+            type: 'assistant',
+            timestamp: '2026-04-17T03:52:57.426Z',
+            message: {
+              stop_reason: 'tool_use'
+            }
+          })
+        ].join('\n'),
+        'utf8'
+      );
+
+      const parser = new LogParser();
+      const prompts = (parser as any).extractClaudePrompts(logPath);
+
+      expect(prompts).toEqual([
+        expect.objectContaining({
+          sourceRef: 'session-5:prompt-1',
+          pauseTriggeredAt: '2026-04-17T03:52:57.426Z'
+        })
+      ]);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('LogParser lightweight today/running discovery', () => {
@@ -554,6 +695,46 @@ describe('LogParser Codex turn completion', () => {
     ]);
   });
 
+  it('records a pause trigger for Codex function_call response items without completing the turn', () => {
+    const sessionId = 'rollout-2026-04-17T12-10-27-019d99a2-0c14-7701-886d-75d3b46375e6';
+    const lines = [
+      JSON.stringify({
+        timestamp: '2026-04-17T04:10:50.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'task_started',
+          turn_id: 'turn-1'
+        }
+      }),
+      JSON.stringify({
+        timestamp: '2026-04-17T04:10:51.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'user_message',
+          message: '## My request for Codex:\nWhat should I do after seeing 1?'
+        }
+      }),
+      JSON.stringify({
+        timestamp: '2026-04-17T04:10:53.455Z',
+        type: 'response_item',
+        payload: {
+          type: 'function_call',
+          name: 'request_user_input',
+          arguments: '{"questions":[{"header":"数字 1","id":"next_after_1"}]}',
+          call_id: 'call_nWjITzvT3yC3m1t8kJJ5QrZQ'
+        }
+      })
+    ];
+
+    expect(extractCodexPromptRecords(lines, sessionId, '2026-04-17')).toEqual([
+      expect.objectContaining({
+        sourceRef: `${sessionId}:turn-1`,
+        completedAt: undefined,
+        pauseTriggeredAt: '2026-04-17T04:10:53.455Z'
+      })
+    ]);
+  });
+
   it('transitions codex running state by turn completion instead of session activity', () => {
     const sessionId = 'rollout-2026-04-12T20-10-00-019d8174-b2f9-7cb3-99bc-85aa22c13ad8';
     const persisted = [
@@ -762,5 +943,36 @@ describe('LogParser Codex turn completion', () => {
 
     expect(result.inserted).toEqual([]);
     expect(result.nextState).toEqual([]);
+  });
+
+  it('surfaces fresh pause triggers during status resolution', () => {
+    const sessionId = 'claude-session-9';
+    const scanned = [
+      {
+        source: 'claude-code' as const,
+        sessionId,
+        sourceRef: `${sessionId}:prompt-1`,
+        project: 'project-z',
+        userInput: 'Read the current state.',
+        createdAt: '2026-04-17T04:00:00.000Z',
+        pauseTriggeredAt: '2026-04-17T04:00:30.000Z'
+      }
+    ];
+    const persisted = [
+      {
+        source: 'claude-code' as const,
+        sessionId,
+        sourceRef: `${sessionId}:prompt-1`,
+        project: 'project-z',
+        userInput: 'Read the current state.',
+        createdAt: '2026-04-17T04:00:00.000Z',
+        status: 'running' as const,
+        justCompleted: false
+      }
+    ];
+
+    const result = resolvePromptStatuses(scanned, persisted, new Set([`claude-code:${sessionId}`]));
+
+    expect(result.pauseTriggerSourceRefs).toEqual([`${sessionId}:prompt-1`]);
   });
 });

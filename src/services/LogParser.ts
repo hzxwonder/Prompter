@@ -16,6 +16,8 @@ export interface LogPrompt {
   justCompleted: boolean;
   completedAt?: string;
   completionKind?: 'completed' | 'aborted';
+  pauseTriggeredAt?: string;
+  silentCompletion?: boolean;
 }
 
 interface StoredPromptRecord {
@@ -29,6 +31,8 @@ interface StoredPromptRecord {
   justCompleted: boolean;
   completedAt?: string;
   completionKind?: 'completed' | 'aborted';
+  pauseTriggeredAt?: string;
+  silentCompletion?: boolean;
 }
 
 export interface ParsedPromptRecord {
@@ -40,6 +44,8 @@ export interface ParsedPromptRecord {
   createdAt: string;
   completedAt?: string;
   completionKind?: 'completed' | 'aborted';
+  pauseTriggeredAt?: string;
+  silentCompletion?: boolean;
 }
 
 export interface LogSessionScanEntry {
@@ -192,6 +198,7 @@ export function extractCodexPromptRecords(
   const turnStartById = new Map<string, string>();
   const taskCompletedAtByTurnId = new Map<string, string>();
   const completionKindByTurnId = new Map<string, 'completed' | 'aborted'>();
+  const pauseTriggeredAtByTurnId = new Map<string, string>();
   const acceptedTurnIds = new Set<string>();
   let activeTurnId: string | null = null;
 
@@ -259,6 +266,11 @@ export function extractCodexPromptRecords(
         continue;
       }
 
+      if (eventType === 'response_item' && payload.type === 'function_call' && activeTurnId && !ignoredTurnIds.has(activeTurnId)) {
+        pauseTriggeredAtByTurnId.set(activeTurnId, event.timestamp || dateStr);
+        continue;
+      }
+
       if (eventType === 'event_msg' && payload.type === 'user_message') {
         const msg = payload.message || '';
         const userInput = sanitizePrompt(extractUserText(msg));
@@ -271,7 +283,8 @@ export function extractCodexPromptRecords(
             userInput,
             createdAt: turnStartById.get(activeTurnId) || event.timestamp || dateStr,
             completedAt: taskCompletedAtByTurnId.get(activeTurnId),
-            completionKind: completionKindByTurnId.get(activeTurnId)
+            completionKind: completionKindByTurnId.get(activeTurnId),
+            pauseTriggeredAt: pauseTriggeredAtByTurnId.get(activeTurnId)
           });
         }
         continue;
@@ -312,7 +325,8 @@ export function extractCodexPromptRecords(
                 userInput,
                 createdAt: event.timestamp || turnStartById.get(sourceTurnId) || dateStr,
                 completedAt: taskCompletedAtByTurnId.get(sourceTurnId),
-                completionKind: completionKindByTurnId.get(sourceTurnId)
+                completionKind: completionKindByTurnId.get(sourceTurnId),
+                pauseTriggeredAt: pauseTriggeredAtByTurnId.get(sourceTurnId)
               });
             }
           }
@@ -329,13 +343,15 @@ export function extractCodexPromptRecords(
     const turnId = prompt.sourceRef.slice(sessionId.length + 1);
     const completedAt = taskCompletedAtByTurnId.get(turnId) ?? prompt.completedAt;
     const completionKind = completionKindByTurnId.get(turnId) ?? prompt.completionKind;
+    const pauseTriggeredAt = pauseTriggeredAtByTurnId.get(turnId) ?? prompt.pauseTriggeredAt;
     const existing = dedupedPrompts.get(prompt.sourceRef);
 
     if (!existing) {
       dedupedPrompts.set(prompt.sourceRef, {
         ...prompt,
         completedAt,
-        completionKind
+        completionKind,
+        pauseTriggeredAt
       });
       continue;
     }
@@ -351,7 +367,8 @@ export function extractCodexPromptRecords(
       userInput: prompt.userInput || existing.userInput,
       createdAt: shouldUseEarlierCreatedAt ? prompt.createdAt : existing.createdAt,
       completedAt: completedAt ?? existing.completedAt,
-      completionKind: completionKind ?? existing.completionKind
+      completionKind: completionKind ?? existing.completionKind,
+      pauseTriggeredAt: pauseTriggeredAt ?? existing.pauseTriggeredAt
     });
   }
 
@@ -362,7 +379,13 @@ export function resolvePromptStatuses(
   allPrompts: ParsedPromptRecord[],
   persistedPrompts: StoredPromptRecord[],
   runningSessions: Set<string>
-): { inserted: LogPrompt[]; nextState: StoredPromptRecord[]; justCompletedSourceRefs: string[]; silentlyCompletedSourceRefs: string[] } {
+): {
+  inserted: LogPrompt[];
+  nextState: StoredPromptRecord[];
+  justCompletedSourceRefs: string[];
+  silentlyCompletedSourceRefs: string[];
+  pauseTriggerSourceRefs: string[];
+} {
   const buildPromptKey = (prompt: Pick<StoredPromptRecord, 'source' | 'sourceRef' | 'userInput' | 'createdAt'>): string => {
     if (prompt.source === 'roo-code') {
       return `${prompt.source}|${prompt.sourceRef}|${prompt.userInput}`;
@@ -406,9 +429,15 @@ export function resolvePromptStatuses(
       userInput: latest.userInput,
       createdAt: latest.createdAt,
       completedAt: latest.completedAt ?? row.completedAt,
-      completionKind: latest.completionKind ?? row.completionKind
+      completionKind: latest.completionKind ?? row.completionKind,
+      pauseTriggeredAt: latest.pauseTriggeredAt ?? row.pauseTriggeredAt,
+      silentCompletion: latest.silentCompletion ?? row.silentCompletion
     }];
   });
+
+  const previousPauseTriggeredAtByPrompt = new Map(
+    persistedPrompts.map((row) => [promptKey(row.source, row.sourceRef), normalizeLegacyTimestamp(row.pauseTriggeredAt)] as const)
+  );
 
   const previouslyCompletedPromptKeys = new Set(
     mergedState
@@ -490,6 +519,7 @@ export function resolvePromptStatuses(
       row.status === 'running' &&
       nextStatus === 'completed' &&
       row.completionKind !== 'aborted' &&
+      !row.silentCompletion &&
       !previouslyCompletedPromptKeys.has(promptKey(row.source, row.sourceRef)) &&
       (row.source === 'codex'
         ? true
@@ -510,13 +540,21 @@ export function resolvePromptStatuses(
     .filter(
       (row) =>
         row.status === 'completed' &&
-        row.completionKind === 'aborted' &&
-        row.source === 'codex' &&
+        (row.completionKind === 'aborted' || row.silentCompletion) &&
         previouslyRunningPromptKeys.has(promptKey(row.source, row.sourceRef))
     )
     .map((row) => row.sourceRef);
 
-  return { inserted, nextState, justCompletedSourceRefs, silentlyCompletedSourceRefs };
+  const pauseTriggerSourceRefs = nextState
+    .filter((row) => {
+      if (!row.pauseTriggeredAt) {
+        return false;
+      }
+      return normalizeLegacyTimestamp(row.pauseTriggeredAt) !== previousPauseTriggeredAtByPrompt.get(promptKey(row.source, row.sourceRef));
+    })
+    .map((row) => row.sourceRef);
+
+  return { inserted, nextState, justCompletedSourceRefs, silentlyCompletedSourceRefs, pauseTriggerSourceRefs };
 }
 
 function toDateBucketFromMs(timestampMs: number): string {
@@ -599,11 +637,20 @@ export class LogParser {
           // Detect assistant completion: stop_reason === "end_turn"
           // stop_reason lives inside event.message (not at top level)
           const stopReason = event.message?.stop_reason ?? event.stop_reason;
-          if (stopReason === 'end_turn' && prompts.length > 0) {
+          if ((stopReason === 'end_turn' || stopReason === 'stop_sequence') && prompts.length > 0) {
             const lastPrompt = prompts[prompts.length - 1];
             if (!lastPrompt.completedAt) {
               lastPrompt.completedAt = event.timestamp ?? new Date().toISOString();
             }
+            if (stopReason === 'stop_sequence') {
+              lastPrompt.silentCompletion = true;
+            }
+            continue;
+          }
+
+          if (stopReason === 'tool_use' && prompts.length > 0) {
+            const lastPrompt = prompts[prompts.length - 1];
+            lastPrompt.pauseTriggeredAt = event.timestamp ?? new Date().toISOString();
             continue;
           }
 
@@ -621,11 +668,17 @@ export class LogParser {
             // Detect user interruption: [Request interrupted by user]
             const rawContent = event.message?.content;
             const firstText = Array.isArray(rawContent) ? rawContent.find((c: ClaudeTextContentItem) => c?.type === 'text')?.text ?? '' : '';
-            if (firstText.trim() === '[Request interrupted by user]') {
+            if (
+              firstText.trim() === '[Request interrupted by user]' ||
+              firstText.trim() === '[Request interrupted by user for tool use]'
+            ) {
               if (prompts.length > 0) {
                 const lastPrompt = prompts[prompts.length - 1];
                 if (!lastPrompt.completedAt) {
                   lastPrompt.completedAt = event.timestamp ?? new Date().toISOString();
+                }
+                if (firstText.trim() === '[Request interrupted by user for tool use]') {
+                  lastPrompt.silentCompletion = true;
                 }
               }
               continue;
@@ -1056,12 +1109,13 @@ export class LogParser {
   applySessionScan(
     scannedPrompts: ParsedPromptRecord[],
     runningSessions: Set<string>
-  ): { inserted: LogPrompt[]; justCompletedSourceRefs: string[]; silentlyCompletedSourceRefs: string[] } {
+  ): { inserted: LogPrompt[]; justCompletedSourceRefs: string[]; silentlyCompletedSourceRefs: string[]; pauseTriggerSourceRefs: string[] } {
     if (scannedPrompts.length === 0) {
       return {
         inserted: [],
         justCompletedSourceRefs: [],
-        silentlyCompletedSourceRefs: []
+        silentlyCompletedSourceRefs: [],
+        pauseTriggerSourceRefs: []
       };
     }
 
@@ -1073,7 +1127,7 @@ export class LogParser {
       targetSessionKeys.has(sessionKey(prompt.source, prompt.sessionId))
     );
 
-    const { inserted, nextState, justCompletedSourceRefs, silentlyCompletedSourceRefs } = resolvePromptStatuses(
+    const { inserted, nextState, justCompletedSourceRefs, silentlyCompletedSourceRefs, pauseTriggerSourceRefs } = resolvePromptStatuses(
       scannedPrompts,
       sessionPrompts,
       runningSessions
@@ -1085,7 +1139,8 @@ export class LogParser {
     return {
       inserted,
       justCompletedSourceRefs,
-      silentlyCompletedSourceRefs
+      silentlyCompletedSourceRefs,
+      pauseTriggerSourceRefs
     };
   }
 
@@ -1286,10 +1341,15 @@ export class LogParser {
     return `${prompt.source}|${prompt.sourceRef}|${prompt.userInput}|${this.normalizeTimestamp(prompt.createdAt)}`;
   }
 
-  sync(): { inserted: LogPrompt[]; justCompletedSourceRefs: string[]; silentlyCompletedSourceRefs: string[] } {
+  sync(): {
+    inserted: LogPrompt[];
+    justCompletedSourceRefs: string[];
+    silentlyCompletedSourceRefs: string[];
+    pauseTriggerSourceRefs: string[];
+  } {
     const allPrompts = [...this.scanClaudeLogs(), ...this.scanCodexLogs()];
     const runningSessions = this.getRunningSessions();
-    const { inserted, nextState, justCompletedSourceRefs, silentlyCompletedSourceRefs } = resolvePromptStatuses(
+    const { inserted, nextState, justCompletedSourceRefs, silentlyCompletedSourceRefs, pauseTriggerSourceRefs } = resolvePromptStatuses(
       allPrompts,
       this.state.prompts,
       runningSessions
@@ -1300,7 +1360,8 @@ export class LogParser {
     return {
       inserted,
       justCompletedSourceRefs,
-      silentlyCompletedSourceRefs
+      silentlyCompletedSourceRefs,
+      pauseTriggerSourceRefs
     };
   }
 

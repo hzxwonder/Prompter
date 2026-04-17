@@ -44,7 +44,7 @@ vi.mock('../../../src/services/LogParser', () => ({
     return {
       close: vi.fn(),
       resetPersistedState: vi.fn(),
-      sync: vi.fn(() => ({ inserted: [], justCompletedSourceRefs: [] })),
+      sync: vi.fn(() => ({ inserted: [], justCompletedSourceRefs: [], silentlyCompletedSourceRefs: [], pauseTriggerSourceRefs: [] })),
       getAllPrompts: vi.fn(() => []),
       getSessionLastModifiedMs: vi.fn(() => undefined),
       getRunningSessionsSnapshot: vi.fn(() => new Set<string>()),
@@ -2100,6 +2100,260 @@ describe('LogSyncService', () => {
     expect(repository.updateCardLastActiveAt).toHaveBeenCalledWith(
       'session-1:turn-2',
       '2026-04-08T10:30:00.000Z'
+    );
+  });
+
+  it('pauses the latest active prompt after 10s plus 45s of unchanged watch-pool activity', async () => {
+    const state = createInitialState('2026-04-17T04:00:00.000Z');
+    state.settings.language = 'en';
+    state.settings.notifyOnPause = true;
+    state.settings.completionTone = 'chime';
+    state.cards = [
+      {
+        id: 'card-1',
+        title: 'Tool confirmation',
+        content: 'Confirm before continuing.',
+        status: 'active',
+        runtimeState: 'running',
+        groupId: 'codex:session-1',
+        groupName: 'session-1',
+        groupColor: '#22c55e',
+        sourceType: 'codex',
+        sourceRef: 'session-1:turn-1',
+        createdAt: '2026-04-17T03:59:00.000Z',
+        updatedAt: '2026-04-17T03:59:00.000Z',
+        lastActiveAt: '2026-04-17T03:59:00.000Z',
+        dateBucket: '2026-04-17',
+        fileRefs: [],
+        justCompleted: false
+      }
+    ];
+
+    const repository = {
+      getState: vi.fn().mockImplementation(async () => state),
+      updateCardRuntimeState: vi.fn().mockImplementation(async (_sourceRef: string, runtimeState: 'running' | 'paused', updatedAt: string) => {
+        state.cards[0] = {
+          ...state.cards[0],
+          runtimeState,
+          updatedAt
+        };
+      })
+    };
+
+    let snapshot = [{
+      path: '/tmp/session-1.jsonl',
+      source: 'codex' as const,
+      lastSize: 120,
+      lastMtimeMs: 1000,
+      lastChangedAt: 1000
+    }];
+    let nowMs = 0;
+    const originalDateNow = Date.now;
+    Date.now = () => nowMs;
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    (service as any).fileWatchPool = {
+      getPoolSnapshot: vi.fn(() => snapshot)
+    };
+    const { PrompterPanel } = await import('../../../src/panel/PrompterPanel');
+
+    try {
+      await (service as any).registerPauseTriggers(['session-1:turn-1']);
+
+      nowMs = 9_000;
+      await (service as any).reconcilePausedPromptStates();
+      expect(repository.updateCardRuntimeState).not.toHaveBeenCalled();
+
+      nowMs = 54_999;
+      await (service as any).reconcilePausedPromptStates();
+      expect(repository.updateCardRuntimeState).not.toHaveBeenCalled();
+
+      nowMs = 55_000;
+      await (service as any).reconcilePausedPromptStates();
+
+      expect(repository.updateCardRuntimeState).toHaveBeenCalledTimes(1);
+      expect(repository.updateCardRuntimeState).toHaveBeenCalledWith(
+        'session-1:turn-1',
+        'paused',
+        '1970-01-01T00:00:55.000Z'
+      );
+      expect(PrompterPanel.playCompletionTone).toHaveBeenCalledWith('chime');
+      expect(PrompterPanel.showToast).toHaveBeenCalledWith({
+        id: 'prompt-paused:card-1:1970-01-01T00:00:55.000Z',
+        kind: 'info',
+        message: 'Prompt paused: Tool confirmation...',
+        actionLabel: 'View',
+        actionCommand: 'prompter.open'
+      });
+    } finally {
+      Date.now = originalDateNow;
+    }
+  });
+
+  it('resets the pause timer when a new trigger arrives for the same session', async () => {
+    const state = createInitialState('2026-04-17T04:00:00.000Z');
+    state.cards = [
+      {
+        id: 'card-1',
+        title: 'Second trigger',
+        content: 'Keep waiting for input.',
+        status: 'active',
+        runtimeState: 'running',
+        groupId: 'codex:session-1',
+        groupName: 'session-1',
+        groupColor: '#22c55e',
+        sourceType: 'codex',
+        sourceRef: 'session-1:turn-1',
+        createdAt: '2026-04-17T03:59:00.000Z',
+        updatedAt: '2026-04-17T03:59:00.000Z',
+        lastActiveAt: '2026-04-17T03:59:00.000Z',
+        dateBucket: '2026-04-17',
+        fileRefs: [],
+        justCompleted: false
+      }
+    ];
+
+    const repository = {
+      getState: vi.fn().mockImplementation(async () => state),
+      updateCardRuntimeState: vi.fn().mockResolvedValue(undefined)
+    };
+
+    let nowMs = 0;
+    const originalDateNow = Date.now;
+    Date.now = () => nowMs;
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    (service as any).fileWatchPool = {
+      getPoolSnapshot: vi.fn(() => [{
+        path: '/tmp/session-1.jsonl',
+        source: 'codex' as const,
+        lastSize: 120,
+        lastMtimeMs: 1000,
+        lastChangedAt: 1000
+      }])
+    };
+
+    try {
+      await (service as any).registerPauseTriggers(['session-1:turn-1']);
+      nowMs = 20_000;
+      await (service as any).registerPauseTriggers(['session-1:turn-1']);
+
+      nowMs = 74_999;
+      await (service as any).reconcilePausedPromptStates();
+      expect(repository.updateCardRuntimeState).not.toHaveBeenCalled();
+
+      nowMs = 75_000;
+      await (service as any).reconcilePausedPromptStates();
+      expect(repository.updateCardRuntimeState).toHaveBeenCalledTimes(1);
+    } finally {
+      Date.now = originalDateNow;
+    }
+  });
+
+  it('returns a paused prompt to running when watch-pool activity changes again', async () => {
+    const state = createInitialState('2026-04-17T04:00:00.000Z');
+    state.cards = [
+      {
+        id: 'card-1',
+        title: 'Resume prompt',
+        content: 'Wait for file changes.',
+        status: 'active',
+        runtimeState: 'paused',
+        groupId: 'codex:session-1',
+        groupName: 'session-1',
+        groupColor: '#22c55e',
+        sourceType: 'codex',
+        sourceRef: 'session-1:turn-1',
+        createdAt: '2026-04-17T03:59:00.000Z',
+        updatedAt: '2026-04-17T04:10:00.000Z',
+        lastActiveAt: '2026-04-17T04:00:00.000Z',
+        dateBucket: '2026-04-17',
+        fileRefs: [],
+        justCompleted: false
+      }
+    ];
+
+    const repository = {
+      getState: vi.fn().mockImplementation(async () => state),
+      updateCardRuntimeState: vi.fn().mockImplementation(async (_sourceRef: string, runtimeState: 'running' | 'paused', updatedAt: string) => {
+        state.cards[0] = {
+          ...state.cards[0],
+          runtimeState,
+          updatedAt
+        };
+      })
+    };
+
+    let nowMs = 55_000;
+    const originalDateNow = Date.now;
+    Date.now = () => nowMs;
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    (service as any).pauseMonitors = new Map([
+      ['codex:session-1', {
+        source: 'codex',
+        sessionId: 'session-1',
+        sourceRef: 'session-1:turn-1',
+        waitUntilMs: 10_000,
+        lastActivityChangeAtMs: 10_000,
+        lastObservedSize: 120,
+        lastObservedMtimeMs: 1000,
+        isPaused: true,
+        hasNotifiedPause: true
+      }]
+    ]);
+    (service as any).fileWatchPool = {
+      getPoolSnapshot: vi.fn(() => [{
+        path: '/tmp/session-1.jsonl',
+        source: 'codex' as const,
+        lastSize: 121,
+        lastMtimeMs: 2000,
+        lastChangedAt: 2000
+      }])
+    };
+
+    try {
+      await (service as any).reconcilePausedPromptStates();
+      expect(repository.updateCardRuntimeState).toHaveBeenCalledWith(
+        'session-1:turn-1',
+        'running',
+        '1970-01-01T00:00:55.000Z'
+      );
+    } finally {
+      Date.now = originalDateNow;
+    }
+  });
+
+  it('imports silently completed prompts without awaiting confirmation', async () => {
+    const state = createInitialState('2026-04-17T04:00:00.000Z');
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      saveImportedCard: vi.fn().mockResolvedValue({
+        id: 'card-2',
+        sourceRef: 'claude-session-1:prompt-1',
+        title: 'Silent completion'
+      }),
+      markCardCompletedFromLog: vi.fn().mockResolvedValue(undefined)
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+
+    await (service as any).handleNewPrompt({
+      source: 'claude-code',
+      sessionId: 'claude-session-1',
+      sourceRef: 'claude-session-1:prompt-1',
+      project: 'claude-session-1',
+      userInput: 'Stop after the sequence.',
+      createdAt: '2026-04-17T04:12:00.000Z',
+      status: 'completed',
+      completedAt: '2026-04-17T04:12:05.000Z',
+      silentCompletion: true
+    });
+
+    expect(repository.markCardCompletedFromLog).toHaveBeenCalledWith(
+      'claude-session-1:prompt-1',
+      '2026-04-17T04:12:05.000Z',
+      { justCompleted: false }
     );
   });
 });

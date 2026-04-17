@@ -41,6 +41,15 @@ describe('workspace prompt activity state', () => {
     ).toBe('active');
   });
 
+  it('surfaces paused when a persisted active card is paused', () => {
+    expect(
+      getPromptActivityState({
+        card: { ...baseCard, runtimeState: 'paused' },
+        nowMs: Date.parse('2026-04-08T10:10:00.000Z')
+      })
+    ).toBe('paused');
+  });
+
   it('does not show awaiting confirmation once a card is already completed', () => {
     expect(
       getPromptActivityState({

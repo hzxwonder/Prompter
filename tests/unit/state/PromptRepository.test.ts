@@ -886,6 +886,48 @@ describe('PromptRepository', () => {
     ]);
   });
 
+  it('updates runtimeState for an active imported card without changing completion fields', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
+    const repo = await PromptRepository.create(dir, () => '2026-04-17T10:00:00.000Z');
+
+    await repo.saveImportedCard({
+      title: 'Tool use prompt',
+      content: 'Ask for confirmation before continuing.',
+      groupName: 'session-1',
+      sourceType: 'codex',
+      sourceRef: 'session-1:turn-1',
+      status: 'active',
+      runtimeState: 'running',
+      createdAt: '2026-04-17T09:59:00.000Z'
+    });
+
+    await repo.updateCardRuntimeState('session-1:turn-1', 'paused', '2026-04-17T10:01:00.000Z');
+
+    let snapshot = await repo.getState();
+    expect(snapshot.cards).toEqual([
+      expect.objectContaining({
+        sourceRef: 'session-1:turn-1',
+        status: 'active',
+        runtimeState: 'paused',
+        updatedAt: '2026-04-17T10:01:00.000Z',
+        justCompleted: false
+      })
+    ]);
+
+    await repo.updateCardRuntimeState('session-1:turn-1', 'running', '2026-04-17T10:02:00.000Z');
+
+    snapshot = await repo.getState();
+    expect(snapshot.cards).toEqual([
+      expect.objectContaining({
+        sourceRef: 'session-1:turn-1',
+        status: 'active',
+        runtimeState: 'running',
+        updatedAt: '2026-04-17T10:02:00.000Z',
+        justCompleted: false
+      })
+    ]);
+  });
+
   it('rotates the today cache without deleting historical cards', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
     let currentNow = '2026-04-16T23:59:00.000Z';

@@ -25,15 +25,19 @@ function sortCardsByPriorityAndTime(cards: PromptCard[], awaitingConfirmationCar
       return 0;
     }
 
+    if (card.status === 'active' && card.runtimeState === 'paused') {
+      return 1;
+    }
+
     switch (card.status) {
       case 'unused':
-        return 1;
-      case 'active':
         return 2;
-      case 'completed':
+      case 'active':
         return 3;
-      default:
+      case 'completed':
         return 4;
+      default:
+        return 5;
     }
   };
 

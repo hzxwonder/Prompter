@@ -78,4 +78,28 @@ describe('PromptCard', () => {
     expect(screen.queryByText('已完成，待确认')).not.toBeInTheDocument();
     expect(screen.getByText('已完成')).toBeInTheDocument();
   });
+
+  it('shows a paused badge for paused active cards', async () => {
+    const { PromptCard } = await import('../../webview/src/components/PromptCard');
+
+    render(
+      <PromptCard
+        language="en"
+        card={{
+          ...baseCard,
+          status: 'active',
+          runtimeState: 'paused',
+          justCompleted: false,
+          completedAt: undefined
+        }}
+        showStatusBadge
+        onMoveCard={vi.fn()}
+        onAcknowledgeCompletion={vi.fn()}
+        onRenameGroup={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText('Paused')).toBeInTheDocument();
+    expect(screen.queryByText('Completed, awaiting confirmation')).not.toBeInTheDocument();
+  });
 });
