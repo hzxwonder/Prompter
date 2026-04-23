@@ -49,6 +49,10 @@ export function usePrompterStore(initialState: PrompterState) {
     dispatch({ type: 'workspace:insertImport', payload: { text, fileRefs, insertAt } });
   }, []);
 
+  const undoImport = useCallback(() => {
+    dispatch({ type: 'workspace:undoImport' });
+  }, []);
+
   const markDraftSaved = useCallback((card: PromptCard, state: PrompterState) => {
     dispatch({ type: 'workspace:draftSaved', payload: { card, state } });
   }, []);
@@ -95,6 +99,7 @@ export function usePrompterStore(initialState: PrompterState) {
       updateSettings,
       updateWorkspaceDraft,
       insertImportedText,
+      undoImport,
       markDraftSaved,
       moveCard,
       deleteCard,
@@ -106,6 +111,7 @@ export function usePrompterStore(initialState: PrompterState) {
     }),
     [
       insertImportedText,
+      undoImport,
       acknowledgeCompletion,
       deleteCard,
       dismissToast,

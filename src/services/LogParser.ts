@@ -568,11 +568,44 @@ function isSessionMarkedRunning(runningSessions: Set<string>, source: LogPrompt[
 export class LogParser {
   private state: LogParserState;
   private sessionLastModified = new Map<string, number>();
+  private forbiddenPromptKeys = new Set<string>();
 
   constructor() {
     fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
     this.state = this.loadState();
     log('LogParser initialized');
+  }
+
+  /**
+   * Forbidden prompt keys ({sourceType}:{sourceRef}) are dropped both from
+   * persisted parser state and from every future scan, so a deleted prompt
+   * stays gone while new prompts in the same session continue to be parsed.
+   */
+  setForbiddenPromptKeys(keys: Iterable<string>): void {
+    this.forbiddenPromptKeys = new Set(keys);
+    if (this.forbiddenPromptKeys.size === 0) return;
+    const before = this.state.prompts.length;
+    this.state.prompts = this.state.prompts.filter(
+      (p) => !this.forbiddenPromptKeys.has(`${p.source}:${p.sourceRef}`)
+    );
+    if (this.state.prompts.length !== before) {
+      this.saveState();
+    }
+  }
+
+  addForbiddenPromptKey(key: string): void {
+    this.forbiddenPromptKeys.add(key);
+    const before = this.state.prompts.length;
+    this.state.prompts = this.state.prompts.filter(
+      (p) => `${p.source}:${p.sourceRef}` !== key
+    );
+    if (this.state.prompts.length !== before) {
+      this.saveState();
+    }
+  }
+
+  hasForbiddenPromptKey(key: string): boolean {
+    return this.forbiddenPromptKeys.has(key);
   }
 
   hasPersistedPrompts(): boolean {
@@ -1117,6 +1150,23 @@ export class LogParser {
         silentlyCompletedSourceRefs: [],
         pauseTriggerSourceRefs: []
       };
+    }
+
+    // Drop prompts that the user has deleted today — they must not re-enter
+    // state or be emitted as "inserted" again, but the rest of the session's
+    // prompts (both existing and new) still flow through normally.
+    if (this.forbiddenPromptKeys.size > 0) {
+      scannedPrompts = scannedPrompts.filter(
+        (prompt) => !this.forbiddenPromptKeys.has(`${prompt.source}:${prompt.sourceRef}`)
+      );
+      if (scannedPrompts.length === 0) {
+        return {
+          inserted: [],
+          justCompletedSourceRefs: [],
+          silentlyCompletedSourceRefs: [],
+          pauseTriggerSourceRefs: []
+        };
+      }
     }
 
     const targetSessionKeys = new Set(scannedPrompts.map((prompt) => sessionKey(prompt.source, prompt.sessionId)));

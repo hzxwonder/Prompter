@@ -371,6 +371,23 @@ interface PersistedTodayCardsState {
   generatedAt?: string;
 }
 
+export interface ForbiddenPromptState {
+  dateBucket: string;
+  promptKeys: string[];
+  updatedAt?: string;
+  /** Legacy — previous versions stored session-level bans here; migrated on load. */
+  sessionKeys?: string[];
+}
+
+export function buildForbiddenPromptKey(
+  sourceType: PromptSourceType,
+  sourceRef: string | undefined
+): string | undefined {
+  if (!sourceRef) return undefined;
+  if (sourceType === 'manual' || sourceType === 'cursor') return undefined;
+  return `${sourceType}:${sourceRef}`;
+}
+
 /** Normalise any timestamp format to ISO-8601 string for consistent sorting. */
 function normalizeTs(ts: string): string {
   const raw = ts.trim();
@@ -533,6 +550,7 @@ export class PromptRepository {
   private state: PrompterState;
   private fullCards: PromptCard[] = [];
   private sessionGroups: SessionGroupMap = {};
+  private forbiddenPrompts: ForbiddenPromptState = { dateBucket: '', promptKeys: [] };
 
   private constructor(
     private readonly store: FileStore,
@@ -545,14 +563,33 @@ export class PromptRepository {
     const defaultSettings = createInitialState(this.now()).settings;
     const defaultHistoryImport = createInitialHistoryImportState();
     const todayBucket = toDateBucket(this.now());
-    const [cards, modularPrompts, settings, sessionGroups, persistedHistoryImport, persistedTodayCards] = await Promise.all([
+    const [cards, modularPrompts, settings, sessionGroups, persistedHistoryImport, persistedTodayCards, persistedForbidden] = await Promise.all([
       this.store.readJson<PromptCard[]>('cards.json', []),
       this.store.readJson('modular-prompts.json', []),
       this.store.readJson<Partial<PrompterState['settings']>>('settings.json', defaultSettings),
       this.store.readJson<SessionGroupMap>('session-groups.json', {}),
       this.store.readJson<PersistedHistoryImportState>('history-import.json', defaultHistoryImport),
-      this.store.readJson<PersistedTodayCardsState | null>('today_cards.json', null)
+      this.store.readJson<PersistedTodayCardsState | null>('today_cards.json', null),
+      this.store.readJson<ForbiddenPromptState | null>('today_forbidden.json', null)
     ]);
+
+    // Reset forbidden list if it's from a previous day — it's meant to track
+    // deletions within the current day only. Accept the legacy `sessionKeys`
+    // field (session-scoped bans) and migrate it to `promptKeys`.
+    if (persistedForbidden && persistedForbidden.dateBucket === todayBucket) {
+      const promptKeys = Array.isArray(persistedForbidden.promptKeys)
+        ? [...persistedForbidden.promptKeys]
+        : Array.isArray(persistedForbidden.sessionKeys)
+          ? [...persistedForbidden.sessionKeys]
+          : [];
+      this.forbiddenPrompts = {
+        dateBucket: todayBucket,
+        promptKeys,
+        updatedAt: persistedForbidden.updatedAt
+      };
+    } else {
+      this.forbiddenPrompts = { dateBucket: todayBucket, promptKeys: [] };
+    }
 
     // ── 迁移：修正 groupName / groupId，同时移除系统自动生成的消息卡片 ──
     let needsPersist = false;
@@ -1161,10 +1198,44 @@ export class PromptRepository {
     await this.persist();
   }
 
-  async deleteCard(cardId: string): Promise<void> {
+  async deleteCard(cardId: string): Promise<{ forbiddenPromptKey?: string; sourceType?: PromptSourceType; sourceRef?: string }> {
+    const target = this.fullCards.find((c) => c.id === cardId);
     this.fullCards = this.fullCards.filter((c) => c.id !== cardId);
     this.syncCardsProjection();
     await this.persist();
+
+    let forbiddenPromptKey: string | undefined;
+    if (target) {
+      forbiddenPromptKey = buildForbiddenPromptKey(target.sourceType, target.sourceRef);
+      if (forbiddenPromptKey) {
+        await this.addForbiddenPromptKey(forbiddenPromptKey);
+      }
+    }
+    return {
+      forbiddenPromptKey,
+      sourceType: target?.sourceType,
+      sourceRef: target?.sourceRef
+    };
+  }
+
+  getForbiddenPromptKeys(): string[] {
+    const todayBucket = toDateBucket(this.now());
+    if (this.forbiddenPrompts.dateBucket !== todayBucket) {
+      this.forbiddenPrompts = { dateBucket: todayBucket, promptKeys: [] };
+    }
+    return [...this.forbiddenPrompts.promptKeys];
+  }
+
+  async addForbiddenPromptKey(promptKey: string): Promise<void> {
+    const todayBucket = toDateBucket(this.now());
+    if (this.forbiddenPrompts.dateBucket !== todayBucket) {
+      this.forbiddenPrompts = { dateBucket: todayBucket, promptKeys: [] };
+    }
+    if (!this.forbiddenPrompts.promptKeys.includes(promptKey)) {
+      this.forbiddenPrompts.promptKeys.push(promptKey);
+    }
+    this.forbiddenPrompts.updatedAt = this.now();
+    await this.store.writeJson('today_forbidden.json', this.forbiddenPrompts);
   }
 
   async rotateTodayCards(): Promise<void> {
@@ -1173,6 +1244,11 @@ export class PromptRepository {
       ...this.state,
       workspaceCards: snapshot.cards
     };
+    const todayBucket = toDateBucket(this.now());
+    if (this.forbiddenPrompts.dateBucket !== todayBucket) {
+      this.forbiddenPrompts = { dateBucket: todayBucket, promptKeys: [] };
+      await this.store.writeJson('today_forbidden.json', this.forbiddenPrompts);
+    }
     await this.store.writeJson('today_cards.json', snapshot);
   }
 

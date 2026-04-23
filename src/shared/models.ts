@@ -123,6 +123,7 @@ export interface PrompterSettings {
   customTonePath: string;
   logSources: Record<'claude-code' | 'codex' | 'roo-code', LogSourceConfig>;
   shortcuts: Record<PrompterCommandId, ShortcutConfig>;
+  suppressDeleteSessionConfirm?: boolean;
 }
 
 export interface HistoryImportState {

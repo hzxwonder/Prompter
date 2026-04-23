@@ -31,6 +31,7 @@ export class PrompterPanel {
       onUserActivity?: () => void;
       startHistoryImport?: () => Promise<void>;
       pauseHistoryImport?: () => Promise<void>;
+      onCardDeleted?: (info: { forbiddenPromptKey?: string; sourceType?: string; sourceRef?: string }) => Promise<void> | void;
     }
   ): Promise<void> {
     if (PrompterPanel.currentPanel) {
@@ -220,6 +221,7 @@ export class PrompterPanel {
       onUserActivity?: () => void;
       startHistoryImport?: () => Promise<void>;
       pauseHistoryImport?: () => Promise<void>;
+      onCardDeleted?: (info: { forbiddenPromptKey?: string; sourceType?: string; sourceRef?: string }) => Promise<void> | void;
     }
   ) {
     this.panel.onDidDispose(() => {
@@ -370,7 +372,14 @@ export class PrompterPanel {
       }
 
       if (message.type === 'card:delete') {
-        await this.repository.deleteCard(message.payload.cardId);
+        const deleteInfo = await this.repository.deleteCard(message.payload.cardId);
+        if (this.actions?.onCardDeleted) {
+          try {
+            await this.actions.onCardDeleted(deleteInfo);
+          } catch (error) {
+            logError('onCardDeleted hook failed', error);
+          }
+        }
         this.panel.webview.postMessage({
           type: 'cards:updated',
           payload: { state: await this.repository.getState() }

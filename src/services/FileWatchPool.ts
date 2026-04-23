@@ -48,6 +48,10 @@ export class FileWatchPool extends EventEmitter {
   private readonly rootWatchers: fs.FSWatcher[] = [];
   private readonly dirMtimeCache = new Map<string, number>();
   private readonly persistPath: string | null;
+  /** Paths forbidden from (re-)entering the pool. Keyed by absolute file path. */
+  private readonly forbiddenPaths = new Set<string>();
+  /** Session IDs forbidden — any file whose basename (without .jsonl) matches is rejected. */
+  private readonly forbiddenSessionIds = new Set<string>();
 
   private safetyScanId: ReturnType<typeof setInterval> | null = null;
   private staleSweepId: ReturnType<typeof setInterval> | null = null;
@@ -122,6 +126,55 @@ export class FileWatchPool extends EventEmitter {
     }
 
     log('[FileWatchPool] stopped');
+  }
+
+  /**
+   * Mark a session as forbidden — the matching `.jsonl` file is evicted
+   * immediately and every subsequent attempt to re-add it (via root watcher
+   * events, safety scans, persistence restore, etc.) is rejected. Also
+   * accepts raw file paths for exact matches.
+   */
+  forbidSession(source: WatchSource | undefined, sessionId: string | undefined, filePath?: string): number {
+    if (sessionId) this.forbiddenSessionIds.add(sessionId);
+    if (filePath) this.forbiddenPaths.add(filePath);
+    return this.removeFilesWhere((entry) => this.isForbidden(entry.path, entry.source));
+  }
+
+  isForbidden(filePath: string, _source?: WatchSource): boolean {
+    if (this.forbiddenPaths.has(filePath)) return true;
+    const base = path.basename(filePath, '.jsonl');
+    if (this.forbiddenSessionIds.has(base)) return true;
+    for (const sid of this.forbiddenSessionIds) {
+      if (filePath.includes(sid)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Remove any pool entries whose path matches the provided predicate.
+   * Persists the updated pool after removal. Used when a session is
+   * marked as forbidden (e.g. user deleted its card) so we stop watching it.
+   */
+  removeFilesWhere(predicate: (entry: WatchedFileInfo) => boolean): number {
+    const toRemove: string[] = [];
+    for (const [filePath, entry] of this.pool) {
+      if (predicate({
+        path: entry.path,
+        source: entry.source,
+        lastSize: entry.lastSize,
+        lastMtimeMs: entry.lastMtimeMs,
+        lastChangedAt: entry.lastChangedAt
+      })) {
+        toRemove.push(filePath);
+      }
+    }
+    for (const filePath of toRemove) {
+      this.removeFromPool(filePath);
+    }
+    if (toRemove.length > 0) {
+      this.persistNow();
+    }
+    return toRemove.length;
   }
 
   getPoolSnapshot(): WatchedFileInfo[] {
@@ -247,6 +300,10 @@ export class FileWatchPool extends EventEmitter {
   // ── Level 3: File discovery & pool management ───────────────
 
   private checkAndAddFile(filePath: string, source: WatchSource, existingStat?: fs.Stats): void {
+    if (this.isForbidden(filePath, source)) {
+      return;
+    }
+
     let stat: fs.Stats;
     try {
       stat = existingStat ?? fs.statSync(filePath);
@@ -464,6 +521,7 @@ export class FileWatchPool extends EventEmitter {
       for (const info of state.files) {
         // Skip entries that were already stale when persisted
         if (info.lastChangedAt < staleThreshold) continue;
+        if (this.isForbidden(info.path, info.source)) continue;
         // Verify file still exists and hasn't been replaced
         try {
           const stat = fs.statSync(info.path);

@@ -176,6 +176,7 @@ export function WorkspacePage({
   onAcknowledgeCompletion,
   onRenameGroup,
   onManualSubmit,
+  onUndoImport,
   lastSavedCardId: _lastSavedCardId
 }: {
   language?: PrompterSettings['language'];
@@ -187,6 +188,7 @@ export function WorkspacePage({
   onAcknowledgeCompletion: (cardId: string) => void;
   onRenameGroup: (previousName: string, nextName: string) => void;
   onManualSubmit: () => void;
+  onUndoImport?: () => void;
   lastSavedCardId?: string;
 }) {
   const [isDroppingFiles, setIsDroppingFiles] = useState(false);
@@ -330,6 +332,8 @@ export function WorkspacePage({
         onFileDrop={handleFileDrop}
         onSubmit={handleSubmit}
         onNewDraft={handleNewDraft}
+        onUndoImport={onUndoImport}
+        canUndoImport={(draft.importUndoStack?.length ?? 0) > 0}
         isDroppingFiles={isDroppingFiles}
         sectionRef={composerSectionRef}
         textareaRef={composerTextareaRef}
@@ -379,6 +383,24 @@ export function WorkspacePage({
                 onAcknowledgeCompletion={onAcknowledgeCompletion}
                 onRenameGroup={onRenameGroup}
                 onEditInComposer={handleEditInComposer}
+                onLaneBulkAction={(laneStatus, targetCards) => {
+                  if (targetCards.length === 0) return;
+                  if (laneStatus === 'completed') {
+                    for (const card of targetCards) {
+                      onAcknowledgeCompletion(card.id);
+                    }
+                  } else {
+                    for (const card of targetCards) {
+                      onMoveCard(card.id, 'completed');
+                    }
+                  }
+                }}
+                onLaneBulkDelete={(_laneStatus, targetCards) => {
+                  if (targetCards.length === 0) return;
+                  for (const card of targetCards) {
+                    onDeleteCard(card.id);
+                  }
+                }}
               />
               );
             })}

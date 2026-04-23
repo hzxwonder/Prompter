@@ -39,6 +39,8 @@ export function Composer({
   onFileDrop,
   onSubmit,
   onNewDraft,
+  onUndoImport,
+  canUndoImport = false,
   isDroppingFiles = false,
   sectionRef,
   textareaRef: externalTextareaRef
@@ -51,6 +53,8 @@ export function Composer({
   onFileDrop?: (event: DragEvent<HTMLTextAreaElement>) => void;
   onSubmit?: () => void;
   onNewDraft?: () => void;
+  onUndoImport?: () => void;
+  canUndoImport?: boolean;
   isDroppingFiles?: boolean;
   sectionRef?: Ref<HTMLElement>;
   textareaRef?: Ref<HTMLTextAreaElement>;
@@ -76,6 +80,15 @@ export function Composer({
     if (event.ctrlKey && event.key === 'Enter') {
       event.preventDefault();
       onSubmit?.();
+      return;
+    }
+
+    // Ctrl+Z (or Cmd+Z on mac) undoes the last import — only when an import
+    // snapshot is available; otherwise let the browser handle native undo.
+    const isUndoShortcut = (event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'z';
+    if (isUndoShortcut && canUndoImport && onUndoImport) {
+      event.preventDefault();
+      onUndoImport();
     }
   };
 

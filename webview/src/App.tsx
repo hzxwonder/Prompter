@@ -3,6 +3,7 @@ import type { PromptCard, PrompterCommandId, PrompterState, PrompterView } from 
 import type { ExtensionToWebviewMessage } from '../../src/shared/messages';
 import { postMessage } from './api/vscode';
 import { initializeAudioPlayback, playBuiltinTone } from './lib/audioUtils';
+import { DeleteConfirmOverlay } from './components/DeleteConfirmOverlay';
 import { SidebarNav } from './components/SidebarNav';
 import { ToastViewport } from './components/ToastViewport';
 import { usePrompterStore } from './store/usePrompterStore';
@@ -28,6 +29,7 @@ export function App({
     status: 'idle',
     command: null
   });
+  const [pendingDeleteIds, setPendingDeleteIds] = useState<string[]>([]);
   const {
     state,
     workspaceDraft,
@@ -40,6 +42,7 @@ export function App({
     updateSettings,
     updateWorkspaceDraft,
     insertImportedText,
+    undoImport,
     markDraftSaved,
     moveCard,
     deleteCard,
@@ -149,6 +152,12 @@ export function App({
               postMessage({ type: 'card:move', payload: { cardId, nextStatus } });
             }}
             onDeleteCard={(cardId) => {
+              const target = state.cards.find((c) => c.id === cardId) ?? state.workspaceCards.find((c) => c.id === cardId);
+              const isImported = target && target.sourceType !== 'manual' && target.sourceType !== 'cursor';
+              if (isImported && !state.settings.suppressDeleteSessionConfirm) {
+                setPendingDeleteIds((prev) => (prev.includes(cardId) ? prev : [...prev, cardId]));
+                return;
+              }
               deleteCard(cardId);
               postMessage({ type: 'card:delete', payload: { cardId } });
             }}
@@ -163,6 +172,7 @@ export function App({
             onManualSubmit={() => {
               shouldCopyAfterManualSaveRef.current = true;
             }}
+            onUndoImport={undoImport}
             lastSavedCardId={lastSavedCardId}
           />
         )}
@@ -222,6 +232,30 @@ export function App({
           dismissToast(toast.id);
         }}
       />
+      {pendingDeleteIds.length > 0 && (
+        <DeleteConfirmOverlay
+          language={state.settings.language}
+          count={pendingDeleteIds.length}
+          onCancel={() => setPendingDeleteIds([])}
+          onConfirm={() => {
+            for (const id of pendingDeleteIds) {
+              deleteCard(id);
+              postMessage({ type: 'card:delete', payload: { cardId: id } });
+            }
+            setPendingDeleteIds([]);
+          }}
+          onConfirmAndSuppress={() => {
+            const nextSettings = { suppressDeleteSessionConfirm: true };
+            updateSettings(nextSettings);
+            postMessage({ type: 'settings:update', payload: nextSettings });
+            for (const id of pendingDeleteIds) {
+              deleteCard(id);
+              postMessage({ type: 'card:delete', payload: { cardId: id } });
+            }
+            setPendingDeleteIds([]);
+          }}
+        />
+      )}
     </div>
   );
 }

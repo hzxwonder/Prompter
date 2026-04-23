@@ -73,6 +73,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await logSyncService?.pauseHistoryBackfill();
     };
 
+    const onCardDeleted = async (info: { forbiddenPromptKey?: string; sourceType?: string; sourceRef?: string }) => {
+      await logSyncService?.onCardDeleted(info.forbiddenPromptKey, info.sourceType, info.sourceRef);
+    };
+
     context.subscriptions.push(
       vscode.window.registerWebviewViewProvider(PrompterSidebarViewProvider.viewType, new PrompterSidebarViewProvider()),
       vscode.commands.registerCommand('prompter.open', async () => {
@@ -83,7 +87,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             applyShortcuts,
             onUserActivity,
             startHistoryImport,
-            pauseHistoryImport
+            pauseHistoryImport,
+            onCardDeleted
           });
           log('Command: prompter.open completed');
         } catch (error) {
@@ -167,7 +172,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           applyShortcuts,
           onUserActivity,
           startHistoryImport,
-          pauseHistoryImport
+          pauseHistoryImport,
+          onCardDeleted
         });
         await PrompterPanel.showView(repository, 'shortcuts');
       })
@@ -235,6 +241,9 @@ async function insertIntoComposer(
     },
     pauseHistoryImport: async () => {
       await logSyncService?.pauseHistoryBackfill();
+    },
+    onCardDeleted: async (info) => {
+      await logSyncService?.onCardDeleted(info.forbiddenPromptKey, info.sourceType, info.sourceRef);
     }
   });
   PrompterPanel.postMessage({

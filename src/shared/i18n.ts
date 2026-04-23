@@ -58,7 +58,14 @@ const text = {
       trashZoneIdle: '拖拽至此删除',
       trashZoneOver: '松开以删除',
       cardCount: (count: number) => `${count} 张卡片`,
-      emptyLane: '暂无卡片'
+      emptyLane: '暂无卡片',
+      laneBulkCompleteTitle: '一键完成',
+      laneBulkAcknowledgeTitle: '一键确认',
+      laneBulkDeleteTitle: '一键删除',
+      laneBulkCompleteConfirm: (count: number) => `确认将当前 ${count} 张卡片标记为已完成？`,
+      laneBulkAcknowledgeConfirm: (count: number) => `确认将当前 ${count} 张待确认卡片移入已完成？`,
+      laneBulkDeleteConfirm: (count: number) => `确认删除当前 ${count} 张卡片？`,
+      laneConfirmAgainHint: '再次点击以确认（3 秒内有效）'
     },
     laneLabels: {
       unused: '未使用',
@@ -68,6 +75,14 @@ const text = {
     card: {
       copied: '已复制',
       deletePrompt: '删除 prompt',
+      deleteSessionConfirmTitle: '删除确认',
+      deleteSessionConfirmBody: (count: number) =>
+        count > 1
+          ? `这 ${count} 条 prompt 将从工作台移除，当天也不会再被重新导入。是否继续？`
+          : '该 prompt 将从工作台移除，当天也不会再被重新导入（同会话后续的新 prompt 仍会正常出现）。是否继续？',
+      deleteSessionConfirmOk: '确认删除',
+      deleteSessionConfirmDontAsk: '确认并不再提示',
+      deleteSessionConfirmCancel: '取消',
       createdAt: '创建于',
       paused: '已暂停',
       awaitingConfirmation: '已完成，待确认',
@@ -238,7 +253,14 @@ const text = {
       trashZoneIdle: 'Drag here to delete',
       trashZoneOver: 'Release to delete',
       cardCount: (count: number) => `${count} cards`,
-      emptyLane: 'No cards yet'
+      emptyLane: 'No cards yet',
+      laneBulkCompleteTitle: 'Mark all completed',
+      laneBulkAcknowledgeTitle: 'Acknowledge all',
+      laneBulkDeleteTitle: 'Delete all',
+      laneBulkCompleteConfirm: (count: number) => `Mark ${count} cards as completed?`,
+      laneBulkAcknowledgeConfirm: (count: number) => `Move ${count} awaiting-confirmation cards to completed?`,
+      laneBulkDeleteConfirm: (count: number) => `Delete ${count} cards?`,
+      laneConfirmAgainHint: 'Click again to confirm (3s)'
     },
     laneLabels: {
       unused: 'Unused',
@@ -248,6 +270,14 @@ const text = {
     card: {
       copied: 'Copied',
       deletePrompt: 'Delete prompt',
+      deleteSessionConfirmTitle: 'Confirm deletion',
+      deleteSessionConfirmBody: (count: number) =>
+        count > 1
+          ? `${count} prompts will be removed and will not be re-imported today. Continue?`
+          : 'This prompt will be removed and will not be re-imported today (new prompts in the same session will still appear). Continue?',
+      deleteSessionConfirmOk: 'Delete',
+      deleteSessionConfirmDontAsk: 'Delete and don’t ask again',
+      deleteSessionConfirmCancel: 'Cancel',
       createdAt: 'Created',
       paused: 'Paused',
       awaitingConfirmation: 'Completed, awaiting confirmation',

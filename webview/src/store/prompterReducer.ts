@@ -13,6 +13,12 @@ function groupColor(name: string): string {
   return GROUP_COLORS[hash % GROUP_COLORS.length];
 }
 
+export interface ImportUndoEntry {
+  content: string;
+  fileRefs: FileRef[];
+  cursorIndex?: number;
+}
+
 export interface WorkspaceDraft {
   title: string;
   content: string;
@@ -20,6 +26,7 @@ export interface WorkspaceDraft {
   editingCardId?: string;
   editingCardStatus?: PromptStatus;
   cursorIndex?: number;
+  importUndoStack?: ImportUndoEntry[];
 }
 
 type PrompterAction =
@@ -31,6 +38,7 @@ type PrompterAction =
   | { type: 'settings:update'; payload: Partial<PrompterSettings> }
   | { type: 'workspace:draftChanged'; payload: Partial<WorkspaceDraft> }
   | { type: 'workspace:insertImport'; payload: { text: string; fileRefs?: FileRef[]; insertAt?: number } }
+  | { type: 'workspace:undoImport' }
   | { type: 'workspace:draftSaved'; payload: { card: PromptCard; state: PrompterState } }
   | { type: 'card:move'; payload: { cardId: string; nextStatus: PromptStatus } }
   | { type: 'card:delete'; payload: { cardId: string } }
@@ -195,13 +203,42 @@ function prompterReducer(store: PrompterStoreState, action: PrompterAction): Pro
         }
       }
 
+      const priorStack = store.workspaceDraft.importUndoStack ?? [];
+      const nextStack: ImportUndoEntry[] = [
+        ...priorStack,
+        {
+          content: current,
+          fileRefs: existingRefs,
+          cursorIndex: store.workspaceDraft.cursorIndex
+        }
+      ];
+
       return {
         ...store,
         workspaceDraft: {
           ...store.workspaceDraft,
           content: nextContent,
           fileRefs: mergedRefs,
-          cursorIndex: nextCursorIndex
+          cursorIndex: nextCursorIndex,
+          importUndoStack: nextStack
+        }
+      };
+    }
+    case 'workspace:undoImport': {
+      const stack = store.workspaceDraft.importUndoStack ?? [];
+      if (stack.length === 0) {
+        return store;
+      }
+      const nextStack = stack.slice(0, -1);
+      const previous = stack[stack.length - 1];
+      return {
+        ...store,
+        workspaceDraft: {
+          ...store.workspaceDraft,
+          content: previous.content,
+          fileRefs: previous.fileRefs,
+          cursorIndex: previous.cursorIndex,
+          importUndoStack: nextStack
         }
       };
     }

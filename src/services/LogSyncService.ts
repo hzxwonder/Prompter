@@ -101,6 +101,7 @@ export class LogSyncService {
   private foregroundBusyUntil = 0;
   private pauseMonitors = new Map<string, PauseMonitor>();
   private parser: LogParser;
+  private forbiddenPromptKeys = new Set<string>();
 
   constructor(
     private readonly repository: PromptRepository,
@@ -118,6 +119,8 @@ export class LogSyncService {
       return;
     }
 
+    this.forbiddenPromptKeys = new Set(this.repository.getForbiddenPromptKeys());
+    this.parser.setForbiddenPromptKeys(this.forbiddenPromptKeys);
     this.setupFileWatchPool();
     void this.startInitialImportIfNeeded();
 
@@ -156,6 +159,18 @@ export class LogSyncService {
 
   markUserActivity(durationMs = 2000): void {
     this.foregroundBusyUntil = Math.max(this.foregroundBusyUntil, Date.now() + durationMs);
+  }
+
+  /**
+   * Invoked by the panel after a prompt card is deleted. Bans the specific
+   * prompt (by sourceType:sourceRef) so it never flows back into state or
+   * is re-emitted as a card — but the underlying session file stays on the
+   * watch pool, so future prompts in the same session still import normally.
+   */
+  async onCardDeleted(promptKey: string | undefined, _sourceType?: string, _sourceRef?: string): Promise<void> {
+    if (!promptKey) return;
+    this.forbiddenPromptKeys.add(promptKey);
+    this.parser.addForbiddenPromptKey(promptKey);
   }
 
   async runHistoryBackfill(): Promise<void> {
@@ -956,6 +971,9 @@ export class LogSyncService {
     let changed = false;
 
     for (const prompt of parsedPrompts) {
+      if (this.forbiddenPromptKeys.has(`${prompt.source}:${prompt.sourceRef}`)) {
+        continue;
+      }
       if (this.hasMatchingImportedCard(state, prompt)) {
         continue;
       }
