@@ -12,6 +12,7 @@ import { LogSyncService } from './services/LogSyncService';
 import { log, logError, showOutputChannel } from './logger';
 import { syncUninstallDataDir } from './uninstall/uninstallCleanup';
 import { PrompterSidebarViewProvider } from './views/PrompterSidebarViewProvider';
+import { stripIdeTags } from './shared/promptSanitization';
 
 const DATA_DIR_KEY = 'prompter.dataDir';
 const RELOAD_PROMPT_VERSION_KEY = 'prompter.lastReloadPromptVersion';
@@ -179,6 +180,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       })
     );
 
+    context.subscriptions.push(
+      vscode.commands.registerCommand('prompter.recoverCorruptedData', async () => {
+        try {
+          const result = await repository.recoverCorruptedBackups();
+          if (result.recovered > 0) {
+            vscode.window.showInformationMessage(
+              `Recovered ${result.recovered} cards from ${result.files.length} corrupted backup files.`
+            );
+            await PrompterPanel.refresh(repository);
+          } else {
+            vscode.window.showInformationMessage('No corrupted backup files found or no new cards to recover.');
+          }
+        } catch (error) {
+          logError('Failed to recover corrupted data', error);
+          vscode.window.showErrorMessage('Failed to recover corrupted data. Check the output panel for details.');
+        }
+      })
+    );
+
     log('Commands registered successfully');
     log('Extension activated successfully ✓');
   } catch (error) {
@@ -249,7 +269,7 @@ async function insertIntoComposer(
   PrompterPanel.postMessage({
     type: 'composer:insertText',
     payload: {
-      text: input.text,
+      text: stripIdeTags(input.text),
       fileRefs: input.fileRefs
     }
   });

@@ -2,7 +2,7 @@
   "name": "prompter",
   "displayName": "Prompter",
   "description": "A prompt workspace for VS Code to collect context, reuse prompt blocks, and track AI prompt sessions.",
-  "version": "1.4.4",
+  "version": "1.5.0",
   "license": "MIT",
   "icon": "icon.png",
   "engines": {
@@ -23,7 +23,8 @@
     "onCommand:prompter.openShortcuts",
     "onCommand:prompter.importSelection",
     "onCommand:prompter.importResource",
-    "onCommand:prompter.importTerminalSelection"
+    "onCommand:prompter.importTerminalSelection",
+    "onCommand:prompter.recoverCorruptedData"
   ],
   "categories": [
     "Other"
@@ -82,6 +83,10 @@
       {
         "command": "prompter.importTerminalSelection",
         "title": "Prompter: Import Terminal Selection"
+      },
+      {
+        "command": "prompter.recoverCorruptedData",
+        "title": "Prompter: Recover Corrupted Data"
       }
     ],
     "menus": {

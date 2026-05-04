@@ -2,6 +2,21 @@ import { useState } from 'react';
 import type { PromptCard, DailyStats, PrompterSettings, HistoryImportState } from '../../../src/shared/models';
 import { Heatmap } from '../components/Heatmap';
 import { getLocaleText, isUncategorizedGroupName } from '../i18n';
+import { postMessage } from '../api/vscode';
+
+function JumpIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path d="M11 1.5v1h2.793l-3.647 3.646.708.708L14.5 3.207V6h1V1.5H11zM4.854 8.146l.708.708L2.207 12.5H5v1H1.5v-3.5h1v2.293l3.354-3.147z" />
+    </svg>
+  );
+}
+
+type JumpableSourceType = 'claude-code' | 'codex' | 'roo-code';
+
+function canJumpToSource(sourceType: PromptCard['sourceType']): sourceType is JumpableSourceType {
+  return sourceType === 'claude-code' || sourceType === 'codex' || sourceType === 'roo-code';
+}
 
 function getDisplayGroupName(card: PromptCard, language: PrompterSettings['language']): string {
   if ((card.sourceType === 'codex' || card.sourceType === 'roo-code') && isUncategorizedGroupName(card.groupName) && card.sourceRef) {
@@ -117,6 +132,27 @@ function HistoryCardItem({
           >
             {copied ? '✓' : <CopyIcon />}
           </button>
+          {canJumpToSource(card.sourceType) && card.sourceRef && (
+            <button
+              type="button"
+              className="prompt-card-jump-btn"
+              style={{ opacity: 1 }}
+              aria-label={localeText.card.jumpToSource(localeText.sourceLabels[card.sourceType] ?? card.sourceType)}
+              title={localeText.card.jumpToSource(localeText.sourceLabels[card.sourceType] ?? card.sourceType)}
+              onClick={() => {
+                postMessage({
+                  type: 'card:jumpToSource',
+                  payload: {
+                    cardId: card.id,
+                    sourceType: card.sourceType,
+                    sourceRef: card.sourceRef ?? ''
+                  }
+                });
+              }}
+            >
+              <JumpIcon />
+            </button>
+          )}
         </div>
         <StatusIcon status={card.status} language={language} />
       </div>

@@ -155,7 +155,7 @@ describe('activate', () => {
     expect(context.globalState.get).toHaveBeenCalledWith('prompter.dataDir');
     expect(mockedCreate).toHaveBeenCalledWith('/tmp/prompter-stored');
     expect(syncUninstallDataDir).toHaveBeenCalledWith('/tmp/prompter-stored');
-    expect(registerCommand).toHaveBeenCalledTimes(5);
+    expect(registerCommand).toHaveBeenCalledTimes(6);
     expect(registerWebviewViewProvider).toHaveBeenCalledWith('prompterSidebar', expect.any(Object));
   });
 

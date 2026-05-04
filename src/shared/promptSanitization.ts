@@ -18,6 +18,15 @@ const SKILL_DOC_MARKERS = [
   'Alternative workflow'
 ] as const;
 
+const IDE_TAG_PATTERN = /<ide_opened_file>[\s\S]*?<\/ide_opened_file>|<ide_selection>[\s\S]*?<\/ide_selection>/g;
+
+export function stripIdeTags(content: string): string {
+  return content
+    .replace(IDE_TAG_PATTERN, '')
+    .replace(/^\s*\n/gm, '')
+    .trim();
+}
+
 function stripSystemPatternFromLine(line: string): string {
   for (const pattern of SYSTEM_MESSAGE_PATTERNS) {
     if (line.includes(pattern)) {
@@ -28,7 +37,7 @@ function stripSystemPatternFromLine(line: string): string {
 }
 
 export function sanitizeImportedPromptContent(content: string): string {
-  return content
+  return stripIdeTags(content)
     .split(/\r?\n/)
     .map(stripSystemPatternFromLine)
     .filter((line) => line.length > 0)

@@ -1,9 +1,14 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { logWarn } from '../logger';
 
 export class FileStore {
   constructor(private readonly rootDir: string) {}
+
+  getDataDir(): string {
+    return this.rootDir;
+  }
 
   async init(): Promise<void> {
     await mkdir(this.rootDir, { recursive: true });
@@ -34,7 +39,15 @@ export class FileStore {
 
   async writeJson<T>(fileName: string, value: T): Promise<void> {
     await this.init();
-    await writeFile(join(this.rootDir, fileName), JSON.stringify(value, null, 2), 'utf8');
+    const filePath = join(this.rootDir, fileName);
+    const tmpPath = `${filePath}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(tmpPath, JSON.stringify(value, null, 2), 'utf8');
+      await rename(tmpPath, filePath);
+    } catch (error) {
+      try { await unlink(tmpPath); } catch { /* ignore cleanup errors */ }
+      throw error;
+    }
   }
 }
 

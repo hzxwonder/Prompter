@@ -117,14 +117,12 @@ function prompterReducer(store: PrompterStoreState, action: PrompterAction): Pro
         workspaceDraft: createDraftFromState(action.payload)
       };
     case 'state:sync':
-      // 保留本地的 activeView，避免后台日志同步 (PrompterPanel.refresh) 等触发的
-      // state:replace 强制把用户导航重置回 'workspace'。
-      // 导航切换由 setView() 立即更新本地状态，无需依赖后端的 activeView 字段。
       return {
         ...store,
         state: {
           ...mergeSyncedState(store.state, action.payload),
-          activeView: store.state.activeView
+          activeView: store.state.activeView,
+          selectedDate: store.state.selectedDate
         }
       };
     case 'historyImport:sync':
@@ -163,14 +161,18 @@ function prompterReducer(store: PrompterStoreState, action: PrompterAction): Pro
           }
         }
       };
-    case 'workspace:draftChanged':
+    case 'workspace:draftChanged': {
+      const contentChanged = action.payload.content !== undefined
+        && action.payload.content !== store.workspaceDraft.content;
       return {
         ...store,
         workspaceDraft: {
           ...store.workspaceDraft,
-          ...action.payload
+          ...action.payload,
+          ...(contentChanged ? { importUndoStack: [] } : {})
         }
       };
+    }
     case 'workspace:insertImport': {
       const { text, fileRefs: incomingRefs = [], insertAt = store.workspaceDraft.cursorIndex } = action.payload;
       const current = store.workspaceDraft.content;

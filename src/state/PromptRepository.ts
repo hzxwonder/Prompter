@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import {
   createInitialHistoryImportState,
   createInitialState,
@@ -551,6 +552,7 @@ export class PromptRepository {
   private fullCards: PromptCard[] = [];
   private sessionGroups: SessionGroupMap = {};
   private forbiddenPrompts: ForbiddenPromptState = { dateBucket: '', promptKeys: [] };
+  private persistLock: Promise<void> = Promise.resolve();
 
   private constructor(
     private readonly store: FileStore,
@@ -1257,6 +1259,13 @@ export class PromptRepository {
   }
 
   async persist(): Promise<void> {
+    this.persistLock = this.persistLock
+      .then(() => this.persistInternal())
+      .catch(() => {});
+    await this.persistLock;
+  }
+
+  private async persistInternal(): Promise<void> {
     this.syncCardsProjection();
     const todayCards = this.buildTodayCardsState();
     await Promise.all([
@@ -1268,6 +1277,44 @@ export class PromptRepository {
       this.store.writeJson('settings.json', this.state.settings),
       this.store.writeJson('session-groups.json', this.sessionGroups)
     ]);
+  }
+
+  async recoverCorruptedBackups(): Promise<{ recovered: number; files: string[] }> {
+    const { readdir, readFile } = await import('node:fs/promises');
+    const dataDir = this.store.getDataDir();
+    const entries = await readdir(dataDir);
+    const corruptedFiles = entries.filter((f: string) => f.startsWith('cards.json.corrupted-'));
+
+    let recovered = 0;
+    const processedFiles: string[] = [];
+
+    for (const file of corruptedFiles) {
+      try {
+        const raw = await readFile(join(dataDir, file), 'utf8');
+        if (!raw.trim()) continue;
+        const parsed = JSON.parse(raw);
+
+        if (Array.isArray(parsed)) {
+          for (const card of parsed) {
+            if (card && card.id && !this.fullCards.some((c) => c.id === card.id)) {
+              this.fullCards.push(card);
+              recovered++;
+            }
+          }
+        }
+        processedFiles.push(file);
+      } catch {
+        // File is too corrupted to parse, skip
+      }
+    }
+
+    if (recovered > 0) {
+      this.syncCardsProjection();
+      await this.persist();
+      log(`[PromptRepository] Recovered ${recovered} cards from ${processedFiles.length} corrupted backup files`);
+    }
+
+    return { recovered, files: processedFiles };
   }
 
   private syncCardsProjection(): void {
