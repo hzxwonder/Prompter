@@ -5,3 +5,8 @@ dist/
 .worktrees/
 worktrees/
 docs/
+.vscode/
+docs/
+tests/
+.DS_Store
+log_parser.py

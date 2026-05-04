@@ -9,3 +9,8 @@ esbuild.config.mjs
 tsconfig.json
 package-lock.json
 *.vsix
+docs/
+.vscode/
+docs/
+tests/
+.DS_Store
