@@ -164,13 +164,36 @@ export class LogSyncService {
   /**
    * Invoked by the panel after a prompt card is deleted. Bans the specific
    * prompt (by sourceType:sourceRef) so it never flows back into state or
-   * is re-emitted as a card — but the underlying session file stays on the
-   * watch pool, so future prompts in the same session still import normally.
+   * is re-emitted as a card. Also temporarily evicts the session's `.jsonl`
+   * from the watch pool — the file will be re-added automatically by the
+   * root recursive watcher as soon as a new prompt is written to it, so
+   * future prompts in the same session still import normally.
    */
-  async onCardDeleted(promptKey: string | undefined, _sourceType?: string, _sourceRef?: string): Promise<void> {
+  async onCardDeleted(promptKey: string | undefined, sourceType?: string, sourceRef?: string): Promise<void> {
     if (!promptKey) return;
+
+    // Resolve the session file path BEFORE we drop the prompt from parser state.
+    let sessionFilePath: string | undefined;
+    if (sourceRef) {
+      const promptRecord = this.parser
+        .getAllPrompts()
+        .find((p) => p.sourceRef === sourceRef && (!sourceType || p.source === sourceType));
+      if (promptRecord) {
+        const scanEntries = this.parser.discoverScanEntries();
+        const match = scanEntries.find(
+          (entry) => entry.source === promptRecord.source && entry.sessionId === promptRecord.sessionId
+        );
+        sessionFilePath = match?.path;
+      }
+    }
+
     this.forbiddenPromptKeys.add(promptKey);
     this.parser.addForbiddenPromptKey(promptKey);
+
+    if (this.fileWatchPool && sessionFilePath) {
+      this.fileWatchPool.removeFilesWhere((entry) => entry.path === sessionFilePath);
+      log(`[LogSyncService] evicted session file from watch pool after prompt delete: ${path.basename(sessionFilePath)}`);
+    }
   }
 
   async runHistoryBackfill(): Promise<void> {
