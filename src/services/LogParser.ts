@@ -91,7 +91,7 @@ const ROO_TASKS_DIR = path.join(
   'rooveterinaryinc.roo-cline',
   'tasks'
 );
-const STATE_PATH = path.join(homedir(), 'prompter', 'logs-state.json');
+const STATE_PATH = path.join(homedir(), '.prompter', 'logs-state.json');
 
 function sanitizePrompt(text: string): string {
   return sanitizeImportedPromptContent(text);

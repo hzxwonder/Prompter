@@ -29,6 +29,13 @@ const HISTORY_LOOKBACK_DAYS = 30;
 const HISTORY_PROGRESS_FLUSH_INTERVAL_MS = 400;
 const HISTORY_PROGRESS_FLUSH_SOURCE_INTERVAL = 8;
 
+const FIRST_RUN_BOOTSTRAP_DONE_KEY = 'prompter.firstRunBootstrapDone';
+const FIRST_RUN_LOOKBACK_DAYS = 5;
+const FIRST_RUN_MAX_PROMPTS = 500;
+
+const EXTERNAL_DB_WATCH_DEBOUNCE_MS = 500;
+const EXTERNAL_DB_POLL_INTERVAL_MS = 2000;
+
 interface ImportPromptOptions {
   foregroundOnly?: boolean;
   todayBucket?: string;
@@ -93,8 +100,15 @@ export class LogSyncService {
   private midnightTimeoutId: NodeJS.Timeout | null = null;
   private watchDebounceId: NodeJS.Timeout | null = null;
   private fileWatchPool: FileWatchPool | null = null;
+  private externalDbWatchDebounceId: NodeJS.Timeout | null = null;
+  private externalDbPollIntervalId: NodeJS.Timeout | null = null;
+  private externalDbDataDir: string | null = null;
+  private externalDbCheckInFlight = false;
+  private observedSyncToken: string | undefined;
   private syncInFlight = false;
   private syncQueued = false;
+  private lastWatchPoolSyncAt = 0;
+  private lastForegroundScanMtimeByPath = new Map<string, number>();
   private initialImportInFlight = false;
   private historyBackfillInFlight = false;
   private pauseHistoryRequested = false;
@@ -119,9 +133,14 @@ export class LogSyncService {
       return;
     }
 
-    this.forbiddenPromptKeys = new Set(this.repository.getForbiddenPromptKeys());
+    this.forbiddenPromptKeys = new Set(this.repository.getForbiddenPromptKeys?.() ?? []);
     this.parser.setForbiddenPromptKeys(this.forbiddenPromptKeys);
+    // High-water mark: skip pre-existing files on first sync. Active sessions
+    // are still picked up via discoverTodayOrRunningEntries; this fallback path
+    // only needs to react to genuinely new changes after startup.
+    this.lastWatchPoolSyncAt = Date.now();
     this.setupFileWatchPool();
+    this.setupExternalDbWatcher();
     void this.startInitialImportIfNeeded();
 
     this.intervalId = setInterval(() => {
@@ -153,6 +172,18 @@ export class LogSyncService {
       this.fileWatchPool = null;
     }
 
+    if (this.externalDbWatchDebounceId) {
+      clearTimeout(this.externalDbWatchDebounceId);
+      this.externalDbWatchDebounceId = null;
+    }
+
+    if (this.externalDbPollIntervalId) {
+      clearInterval(this.externalDbPollIntervalId);
+      this.externalDbPollIntervalId = null;
+    }
+
+    this.externalDbDataDir = null;
+    this.observedSyncToken = undefined;
     this.parser.close();
     log('[LogSyncService] 已停止');
   }
@@ -194,6 +225,22 @@ export class LogSyncService {
       this.fileWatchPool.removeFilesWhere((entry) => entry.path === sessionFilePath);
       log(`[LogSyncService] evicted session file from watch pool after prompt delete: ${path.basename(sessionFilePath)}`);
     }
+  }
+
+  private isPromptForbidden(prompt: Pick<LogPrompt, 'source' | 'sourceRef'>): boolean {
+    const key = `${prompt.source}:${prompt.sourceRef}`;
+    if (this.forbiddenPromptKeys.has(key)) {
+      return true;
+    }
+
+    const repositoryForbiddenKeys = this.repository.getForbiddenPromptKeys?.() ?? [];
+    if (!repositoryForbiddenKeys.includes(key)) {
+      return false;
+    }
+
+    this.forbiddenPromptKeys.add(key);
+    this.parser.addForbiddenPromptKey(key);
+    return true;
   }
 
   async runHistoryBackfill(): Promise<void> {
@@ -401,6 +448,7 @@ export class LogSyncService {
       (card) => card.sourceType === 'claude-code' || card.sourceType === 'codex' || card.sourceType === 'roo-code'
     );
     const hasPersistedPrompts = this.parser.hasPersistedPrompts();
+    const firstRunDone = this.context.globalState?.get<boolean>(FIRST_RUN_BOOTSTRAP_DONE_KEY) === true;
 
     if (!hasImportedCards && hasPersistedPrompts) {
       this.parser.resetPersistedState();
@@ -432,7 +480,15 @@ export class LogSyncService {
     this.initialImportInFlight = true;
 
     try {
-      await this.bootstrapTodayImport();
+      if (!firstRunDone) {
+        // True first run: pull last N days, capped at M most recent prompts.
+        // Anything older is left for the user to import manually from the
+        // History page so we don't drown them in notifications/processing.
+        await this.bootstrapInitialImport(FIRST_RUN_LOOKBACK_DAYS, FIRST_RUN_MAX_PROMPTS);
+        await this.context.globalState.update(FIRST_RUN_BOOTSTRAP_DONE_KEY, true);
+      } else {
+        await this.bootstrapTodayImport();
+      }
       await this.prepareHistoryBackfill();
     } catch (error) {
       logError('[LogSyncService] 首次历史导入失败，回退到普通同步', error);
@@ -445,6 +501,94 @@ export class LogSyncService {
         await this.requestSync();
       }
     }
+  }
+
+  /**
+   * First-launch background import: walk recently-modified session files
+   * within the last `lookbackDays` and import up to `maxPrompts` prompts
+   * total (most-recently-modified files first). Anything beyond the cap
+   * stays in the history-import pending queue for manual import.
+   */
+  private async bootstrapInitialImport(lookbackDays: number, maxPrompts: number): Promise<void> {
+    const todayBucket = getTodayBucket();
+    const lookbackStartBucket = (() => {
+      const start = new Date();
+      start.setDate(start.getDate() - lookbackDays);
+      return toLocalDateBucket(start);
+    })();
+    const runningSessions = this.parser.getRunningSessionsSnapshot();
+    const entries = this.parser.discoverScanEntries()
+      .filter((entry) => {
+        const lastModBucket = toLocalDateBucket(entry.lastModifiedMs);
+        return entry.dateBucket >= lookbackStartBucket || lastModBucket >= lookbackStartBucket;
+      })
+      .sort((left, right) => right.lastModifiedMs - left.lastModifiedMs);
+
+    let processedPrompts = 0;
+    let processedSources = 0;
+
+    await this.publishHistoryImportProgress({
+      scope: 'today-bootstrap',
+      status: 'running',
+      processedPrompts,
+      processedSources,
+      totalSources: entries.length,
+      foregroundReady: false,
+      warningAcknowledged: false,
+      pendingEntries: [],
+      completedEntries: [],
+      completedEntryMtims: {}
+    });
+
+    for (const entry of entries) {
+      if (processedPrompts >= maxPrompts) {
+        break;
+      }
+      await this.waitForForegroundIdle();
+      const remaining = maxPrompts - processedPrompts;
+      const imported = await this.importEntry(entry, runningSessions, {
+        foregroundOnly: true,
+        todayBucket,
+        skipRefresh: true,
+        skipNotify: true
+      }, async (scanEntry) => {
+        const filtered = this.parser.scanEntry(scanEntry)
+          .filter((prompt) => toDateBucket(prompt.createdAt) >= lookbackStartBucket);
+        // Most recent first; keep up to `remaining` from this file.
+        const sortedDesc = [...filtered].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+        return sortedDesc.slice(0, remaining);
+      });
+      processedPrompts += imported;
+      processedSources += 1;
+      await this.publishHistoryImportProgress({
+        scope: 'today-bootstrap',
+        status: 'running',
+        processedPrompts,
+        processedSources,
+        totalSources: entries.length,
+        foregroundReady: false,
+        warningAcknowledged: false,
+        pendingEntries: [],
+        completedEntries: [],
+        completedEntryMtims: {}
+      });
+    }
+
+    await this.publishHistoryImportProgress({
+      scope: 'today-bootstrap',
+      status: 'idle',
+      processedPrompts,
+      totalPrompts: processedPrompts,
+      processedSources,
+      totalSources: entries.length,
+      foregroundReady: true,
+      warningAcknowledged: false,
+      pendingEntries: [],
+      completedEntries: [],
+      completedEntryMtims: {}
+    });
+    log(`[LogSyncService] First-run bootstrap imported ${processedPrompts} prompts across ${processedSources} sessions (last ${lookbackDays} days, cap ${maxPrompts})`);
+    await PrompterPanel.refresh(this.repository);
   }
 
   private scheduleMidnightSync(): void {
@@ -468,7 +612,7 @@ export class LogSyncService {
   }
 
   private setupFileWatchPool(): void {
-    const poolPersistPath = path.join(homedir(), 'prompter', 'watch-pool.json');
+    const poolPersistPath = path.join(homedir(), '.prompter', 'watch-pool.json');
     this.fileWatchPool = new FileWatchPool(WATCH_ROOTS, poolPersistPath);
 
     this.fileWatchPool.on('fileChanged', (filePath: string, _source: string) => {
@@ -482,6 +626,83 @@ export class LogSyncService {
     });
 
     this.fileWatchPool.start();
+  }
+
+  /**
+   * Watch/poll the shared storage token for writes made by other VS Code
+   * windows pointing at the same data directory.
+   */
+  private setupExternalDbWatcher(): void {
+    let dataDir: string;
+    try {
+      dataDir = this.repository.getDataDir();
+    } catch {
+      return;
+    }
+
+    this.externalDbDataDir = dataDir;
+    void this.seedObservedSyncToken();
+
+    // Polling avoids consuming another fs.watch handle, which matters on
+    // remote hosts that already hit ENOSPC from other extensions.
+    log(`[LogSyncService] Polling ${dataDir} for cross-window storage changes`);
+    this.externalDbPollIntervalId = setInterval(() => {
+      this.scheduleExternalDbCheck();
+    }, EXTERNAL_DB_POLL_INTERVAL_MS);
+  }
+
+  private async seedObservedSyncToken(): Promise<void> {
+    try {
+      this.observedSyncToken = await this.repository.getSyncToken();
+    } catch {
+      this.observedSyncToken = undefined;
+    }
+  }
+
+  private scheduleExternalDbCheck(): void {
+    if (this.externalDbWatchDebounceId) {
+      clearTimeout(this.externalDbWatchDebounceId);
+    }
+    this.externalDbWatchDebounceId = setTimeout(() => {
+      this.externalDbWatchDebounceId = null;
+      void this.checkExternalDbChange();
+    }, EXTERNAL_DB_WATCH_DEBOUNCE_MS);
+  }
+
+  private async checkExternalDbChange(): Promise<void> {
+    if (this.externalDbCheckInFlight || !this.externalDbDataDir) {
+      return;
+    }
+
+    let currentSyncToken: string | undefined;
+    try {
+      currentSyncToken = await this.repository.getSyncToken();
+    } catch {
+      currentSyncToken = undefined;
+    }
+
+    if (currentSyncToken === undefined || currentSyncToken === this.observedSyncToken) {
+      return;
+    }
+
+    this.observedSyncToken = currentSyncToken;
+
+    if (this.repository.isOwnSyncToken?.(currentSyncToken)) {
+      return;
+    }
+
+    log('[LogSyncService] shared storage token changed — reloading');
+    this.externalDbCheckInFlight = true;
+    try {
+      await this.repository.reload();
+      await PrompterPanel.refresh(this.repository);
+      await this.seedObservedSyncToken();
+      log('[LogSyncService] Repository reload complete after external token change');
+    } catch (error) {
+      logError('[LogSyncService] Failed to reload repository after external token change', error);
+    } finally {
+      this.externalDbCheckInFlight = false;
+    }
   }
 
   private scheduleWatchSync(): void {
@@ -665,12 +886,13 @@ export class LogSyncService {
       ? await scanEntryOverride(entry)
       : this.parser.scanEntry(entry);
     const { inserted } = this.parser.applySessionScan(prompts, runningSessions);
-    const cardsToSave = inserted.map((prompt) => this.buildImportedCardInput(prompt, options));
+    const allowedInserted = inserted.filter((prompt) => !this.isPromptForbidden(prompt));
+    const cardsToSave = allowedInserted.map((prompt) => this.buildImportedCardInput(prompt, options));
     if (cardsToSave.length > 0) {
       await this.repository.saveImportedCards(cardsToSave);
     }
 
-    const insertedInChronologicalOrder = [...inserted].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    const insertedInChronologicalOrder = [...allowedInserted].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
     for (const prompt of insertedInChronologicalOrder) {
       const state = await this.repository.getState();
       await this.completePreviousSameSessionPrompts(state, prompt);
@@ -736,17 +958,18 @@ export class LogSyncService {
   }
 
   /**
-   * Req 9: 午夜时运行 Python 脚本，将当天 prompt 写入 logs.db SQLite 数据库。
+   * Req 9: 午夜时运行 Python 脚本，刷新当天 prompt 记录。
    * 脚本查找顺序：扩展目录 → ~/prompter/log_parser.py
    */
   private runPythonScan(): Promise<void> {
     const candidates = [
       path.join(this.context.extensionPath, 'log_parser.py'),
+      path.join(homedir(), '.prompter', 'log_parser.py'),
       path.join(homedir(), 'prompter', 'log_parser.py')
     ];
     const scriptPath = candidates.find((p) => fs.existsSync(p));
     if (!scriptPath) {
-      log('[LogSyncService] log_parser.py 未找到，跳过 SQLite 更新');
+      log('[LogSyncService] log_parser.py 未找到，跳过外部扫描');
       return Promise.resolve();
     }
     log(`[LogSyncService] 运行 Python 扫描: ${scriptPath}`);
@@ -832,9 +1055,11 @@ export class LogSyncService {
 
         const latestState = await this.repository.getState();
 
-        this.playToneFromSettings(latestState.settings.completionTone, latestState.settings.customTonePath);
+        if (!this.isImportingHistory()) {
+          this.playToneFromSettings(latestState.settings.completionTone, latestState.settings.customTonePath);
+        }
 
-        if (latestState.settings.notifyOnFinish) {
+        if (latestState.settings.notifyOnFinish && !this.isImportingHistory()) {
           const localeText = getLocaleText(latestState.settings.language);
           for (const id of autoCompletedIds) {
             const card = latestState.cards.find((c) => c.id === id);
@@ -873,7 +1098,16 @@ export class LogSyncService {
     const eligibleEntries = this.collectForegroundEntries(todayBucket, runningSessions);
 
     for (const entry of eligibleEntries) {
+      // Skip the synchronous full-file re-read + JSON.parse if the file hasn't
+      // changed since we last scanned it. scanEntry uses fs.readFileSync which
+      // blocks the main thread (and therefore the webview message pump) — for
+      // large rollouts this can stall user input by seconds every cycle.
+      const lastScannedMtime = this.lastForegroundScanMtimeByPath.get(entry.path);
+      if (lastScannedMtime !== undefined && entry.lastModifiedMs <= lastScannedMtime) {
+        continue;
+      }
       const prompts = this.parser.scanEntry(entry).filter((prompt) => shouldIncludeTodayPrompt(prompt, todayBucket));
+      this.lastForegroundScanMtimeByPath.set(entry.path, entry.lastModifiedMs);
       const result = this.parser.applySessionScan(prompts, runningSessions);
       inserted.push(...result.inserted);
       for (const sourceRef of result.justCompletedSourceRefs) {
@@ -920,15 +1154,24 @@ export class LogSyncService {
     }
 
     const snapshot = this.fileWatchPool.getPoolSnapshot() as WatchPoolSnapshotEntry[];
-    return snapshot
-      .filter((entry) => entry.path.endsWith('.jsonl'))
-      .map((entry) => ({
-        source: entry.source,
-        sessionId: path.basename(entry.path, '.jsonl'),
-        path: entry.path,
-        dateBucket: toLocalDateBucket(entry.lastMtimeMs || entry.lastChangedAt || Date.now()),
-        lastModifiedMs: entry.lastMtimeMs || entry.lastChangedAt || Date.now()
-      }));
+    const highWaterMark = this.lastWatchPoolSyncAt;
+    let maxChangedAt = highWaterMark;
+    const entries = snapshot
+      .filter((entry) => entry.path.endsWith('.jsonl') && entry.lastChangedAt > highWaterMark)
+      .map((entry) => {
+        if (entry.lastChangedAt > maxChangedAt) {
+          maxChangedAt = entry.lastChangedAt;
+        }
+        return {
+          source: entry.source,
+          sessionId: path.basename(entry.path, '.jsonl'),
+          path: entry.path,
+          dateBucket: toLocalDateBucket(entry.lastMtimeMs || entry.lastChangedAt || Date.now()),
+          lastModifiedMs: entry.lastMtimeMs || entry.lastChangedAt || Date.now()
+        };
+      });
+    this.lastWatchPoolSyncAt = maxChangedAt;
+    return entries;
   }
 
   private async reconcileStaleActiveCards(): Promise<void> {
@@ -969,6 +1212,10 @@ export class LogSyncService {
     if (reconciled) {
       await PrompterPanel.refresh(this.repository);
 
+      if (this.isImportingHistory()) {
+        return;
+      }
+
       const updatedState = await this.repository.getState();
       this.playToneFromSettings(updatedState.settings.completionTone, updatedState.settings.customTonePath);
 
@@ -994,7 +1241,7 @@ export class LogSyncService {
     let changed = false;
 
     for (const prompt of parsedPrompts) {
-      if (this.forbiddenPromptKeys.has(`${prompt.source}:${prompt.sourceRef}`)) {
+      if (this.isPromptForbidden(prompt)) {
         continue;
       }
       if (this.hasMatchingImportedCard(state, prompt)) {
@@ -1041,6 +1288,16 @@ export class LogSyncService {
 
       return Math.abs(cardCreatedAtMs - promptCreatedAtMs) <= 2000;
     });
+  }
+
+  /**
+   * While we're bootstrapping or backfilling history, completion sounds
+   * and toasts are noise — every newly-discovered finished prompt would
+   * fire a "completed" toast even though it's not something the user
+   * just kicked off. Suppress audio + toast notifications in that window.
+   */
+  private isImportingHistory(): boolean {
+    return this.historyBackfillInFlight || this.initialImportInFlight;
   }
 
   private playToneFromSettings(tone: string, customPath: string): void {
@@ -1151,6 +1408,10 @@ export class LogSyncService {
   }
 
   private async handleNewPrompt(prompt: LogPrompt, options: ImportPromptOptions = {}): Promise<void> {
+    if (this.isPromptForbidden(prompt)) {
+      return;
+    }
+
     log(`[LogSyncService] 发现新 prompt: ${prompt.sessionId}`);
 
     const state = await this.repository.getState();
@@ -1174,7 +1435,7 @@ export class LogSyncService {
       await PrompterPanel.refresh(this.repository);
     }
 
-    if (!options.skipNotify && prompt.status === 'running') {
+    if (!options.skipNotify && prompt.status === 'running' && !this.isImportingHistory()) {
       const localeText = getLocaleText(state.settings.language);
       await this.showRoutineToast({
         id: `prompt-running:${card.id}`,
@@ -1203,6 +1464,10 @@ export class LogSyncService {
 
     // 刷新 webview
     await PrompterPanel.refresh(this.repository);
+
+    if (this.isImportingHistory()) {
+      return;
+    }
 
     const updatedState = await this.repository.getState();
 
@@ -1419,6 +1684,10 @@ export class LogSyncService {
     card: Awaited<ReturnType<PromptRepository['getState']>>['cards'][number],
     nowIso: string
   ): Promise<void> {
+    if (this.isImportingHistory()) {
+      return;
+    }
+
     const state = await this.repository.getState();
     this.playToneFromSettings(state.settings.completionTone, state.settings.customTonePath);
 

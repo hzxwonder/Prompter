@@ -168,10 +168,11 @@ function MonthDetail({
         </span>
       </div>
 
-      {/* Tooltip */}
+      {/* Tooltip — fixed-positioned in viewport coords so it stays visible
+          near grid edges even when ancestors clip overflow */}
       {tooltip && (
         <div
-          className="heatmap-tooltip"
+          className="heatmap-tooltip heatmap-tooltip--fixed"
           style={{ left: tooltip.x, top: tooltip.y }}
           aria-hidden="true"
         >
@@ -210,16 +211,22 @@ function MonthDetail({
                   data-today={key === todayKey ? 'true' : undefined}
                   onClick={() => onSelectDate(key)}
                   onMouseEnter={(e) => {
-                    const wrap = (e.currentTarget as HTMLElement).closest('.heatmap-detail-grid-wrap')!;
-                    const wrapRect = wrap.getBoundingClientRect();
                     const btnRect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    // Use viewport coordinates with position: fixed; clamp x so
+                    // the tooltip never gets clipped near the right edge.
+                    const TOOLTIP_HALF_WIDTH = 110;
+                    const PADDING = 8;
+                    const desiredX = btnRect.left + btnRect.width / 2;
+                    const minX = TOOLTIP_HALF_WIDTH + PADDING;
+                    const maxX = window.innerWidth - TOOLTIP_HALF_WIDTH - PADDING;
+                    const clampedX = Math.max(minX, Math.min(desiredX, maxX));
                     setTooltip({
                       date: key,
                       total: s?.totalCount ?? 0,
                       unused: s?.unusedCount ?? 0,
                       completed: s?.completedCount ?? 0,
-                      x: btnRect.left - wrapRect.left + btnRect.width / 2,
-                      y: btnRect.top - wrapRect.top + btnRect.height + 6
+                      x: clampedX,
+                      y: btnRect.bottom + 6
                     });
                   }}
                   onMouseLeave={() => setTooltip(null)}

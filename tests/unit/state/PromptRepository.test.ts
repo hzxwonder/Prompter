@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { createInitialState } from '../../../src/shared/models';
+import { DataDirStore } from '../../../src/state/DataDirStore';
 import { PromptRepository } from '../../../src/state/PromptRepository';
 
 const { log, logWarn } = vi.hoisted(() => ({
@@ -40,6 +41,134 @@ describe('PromptRepository', () => {
         totalCount: 1
       }
     ]);
+  });
+
+  it('updates the cross-window sync token after draft changes are persisted', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'prompter-'));
+    const repo = await PromptRepository.create(dir, () => '2026-04-08T10:00:00.000Z');
+    const initialToken = await repo.getSyncToken();
+
+    await repo.saveDraft({
+      title: 'Explain src/api.ts',
+      content: 'Review src/api.ts for race conditions',
+      groupName: 'api.ts',
+      sourceType: 'manual',
+      fileRefs: [{ path: 'src/api.ts', startLine: 1, endLine: 20 }]
+    });
+    await repo.flushPersist();
+
+    expect(await repo.getSyncToken()).toBeDefined();
+    expect(await repo.getSyncToken()).not.toBe(initialToken);
+  });
+
+  it('persists manual drafts into the DataDirStore-backed card store', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'prompter-db-'));
+    const repo = await PromptRepository.createWithStore(
+      new DataDirStore(dir),
+      () => '2026-04-08T10:00:00.000Z'
+    );
+
+    await repo.saveDraft({
+      title: 'Manual prompt',
+      content: 'This prompt came from Ctrl+Enter.',
+      groupName: 'manual',
+      sourceType: 'manual',
+      fileRefs: []
+    });
+    await repo.flushPersist();
+
+    const reloaded = await PromptRepository.createWithStore(
+      new DataDirStore(dir),
+      () => '2026-04-08T10:01:00.000Z'
+    );
+    const snapshot = await reloaded.getState();
+
+    expect(snapshot.cards).toEqual([
+      expect.objectContaining({
+        title: 'Manual prompt',
+        content: 'This prompt came from Ctrl+Enter.',
+        sourceType: 'manual',
+        status: 'unused'
+      })
+    ]);
+  });
+
+  it('filters imported cards already forbidden for today when loading JSONL state', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'prompter-db-'));
+    const store = new DataDirStore(dir);
+    const leakedCard = {
+      id: 'deleted-card',
+      title: 'Deleted prompt',
+      content: 'Deleted prompt should not reappear.',
+      status: 'completed',
+      runtimeState: 'finished',
+      groupId: 'codex:session-1',
+      groupName: 'session-1',
+      groupColor: '#22c55e',
+      sourceType: 'codex',
+      sourceRef: 'session-1:turn-1',
+      createdAt: '2026-05-05T09:00:00.000Z',
+      updatedAt: '2026-05-05T09:01:00.000Z',
+      dateBucket: '2026-05-05',
+      fileRefs: [],
+      justCompleted: false,
+      completedAt: '2026-05-05T09:01:00.000Z'
+    };
+
+    await store.writeJson('cards.json', [leakedCard]);
+    await store.writeJson('today_forbidden.json', {
+      dateBucket: '2026-05-05',
+      promptKeys: ['codex:session-1:turn-1'],
+      updatedAt: '2026-05-05T09:02:00.000Z'
+    });
+
+    const repo = await PromptRepository.createWithStore(
+      new DataDirStore(dir),
+      () => '2026-05-05T10:00:00.000Z'
+    );
+
+    expect((await repo.getState()).cards).toEqual([]);
+  });
+
+  it('writes the forbidden prompt marker before persisting an imported-card deletion', async () => {
+    const writes: string[] = [];
+    const card = {
+      id: 'deleted-card',
+      title: 'Deleted prompt',
+      content: 'Deleted prompt should not reappear.',
+      status: 'completed',
+      runtimeState: 'finished',
+      groupId: 'codex:session-1',
+      groupName: 'session-1',
+      groupColor: '#22c55e',
+      sourceType: 'codex',
+      sourceRef: 'session-1:turn-1',
+      createdAt: '2026-05-05T09:00:00.000Z',
+      updatedAt: '2026-05-05T09:01:00.000Z',
+      dateBucket: '2026-05-05',
+      fileRefs: [],
+      justCompleted: false,
+      completedAt: '2026-05-05T09:01:00.000Z'
+    };
+    const store = {
+      getDataDir: () => '/tmp/prompter-test',
+      getSyncToken: vi.fn().mockResolvedValue(undefined),
+      writeSyncToken: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn(),
+      readJson: vi.fn(async (fileName: string, fallback: unknown) => (
+        fileName === 'cards.json' ? [card] : fallback
+      )),
+      writeJson: vi.fn(async (fileName: string) => {
+        writes.push(fileName);
+      })
+    };
+    const repo = await PromptRepository.createWithStore(store as never, () => '2026-05-05T10:00:00.000Z');
+    writes.length = 0;
+
+    await repo.deleteCard('deleted-card');
+
+    expect(writes.indexOf('today_forbidden.json')).toBeGreaterThanOrEqual(0);
+    expect(writes.indexOf('today_forbidden.json')).toBeLessThan(writes.indexOf('cards.json'));
   });
 
   it('loads persisted settings from the target data directory when switching repositories', async () => {
@@ -209,6 +338,7 @@ describe('PromptRepository', () => {
       sourceType: 'manual',
       fileRefs: [{ path: 'src/api.ts', startLine: 1, endLine: 20 }]
     });
+    await repo.flushPersist();
 
     await writeFile(
       join(dir, 'daily-stats.json'),
@@ -763,6 +893,7 @@ describe('PromptRepository', () => {
       sourceType: 'manual',
       fileRefs: [{ path: 'src/api.ts', startLine: 1, endLine: 20 }]
     });
+    await repo.flushPersist();
 
     const cardsPath = join(dir, 'cards.json');
     const settingsPath = join(dir, 'settings.json');
@@ -849,6 +980,7 @@ describe('PromptRepository', () => {
 
     const files = await readdir(dir);
     expect(files.sort()).toEqual([
+      '.sync-token',
       'cards.json',
       'daily-stats.json',
       'history-import.json',

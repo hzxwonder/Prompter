@@ -89,7 +89,8 @@ vi.mock('../../src/state/PromptRepository', async () => {
   return {
     PromptRepository: {
       ...actual.PromptRepository,
-      create: mockedCreate
+      create: mockedCreate,
+      createWithStore: mockedCreate
     }
   };
 });
@@ -140,7 +141,11 @@ describe('activate', () => {
     mockedCreate.mockReset();
     capturedKeybindingsPath = undefined;
     const actual = await vi.importActual<typeof import('../../src/state/PromptRepository')>('../../src/state/PromptRepository');
-    mockedCreate.mockImplementation(actual.PromptRepository.create);
+    mockedCreate.mockImplementation((storeOrDir: unknown, now?: () => string) =>
+      typeof storeOrDir === 'string'
+        ? actual.PromptRepository.create(storeOrDir, now)
+        : actual.PromptRepository.createWithStore(storeOrDir as never, now)
+    );
     currentAppName = 'Code';
     currentLanguage = 'zh-cn';
     currentActiveTextEditor = undefined;
@@ -153,7 +158,7 @@ describe('activate', () => {
     await activate(context as never);
 
     expect(context.globalState.get).toHaveBeenCalledWith('prompter.dataDir');
-    expect(mockedCreate).toHaveBeenCalledWith('/tmp/prompter-stored');
+    expect(mockedCreate).toHaveBeenCalledWith(expect.any(Object));
     expect(syncUninstallDataDir).toHaveBeenCalledWith('/tmp/prompter-stored');
     expect(registerCommand).toHaveBeenCalledTimes(6);
     expect(registerWebviewViewProvider).toHaveBeenCalledWith('prompterSidebar', expect.any(Object));
@@ -272,6 +277,7 @@ describe('activate', () => {
     await writeFile(join(sourceDir, 'notes.txt'), 'do not migrate', 'utf8');
 
     const { activate } = await import('../../src/extension');
+    const { LogSyncService } = await import('../../src/services/LogSyncService');
     const context = createTestContext({ storedDataDir: sourceDir });
 
     await activate(context as never);
@@ -281,6 +287,7 @@ describe('activate', () => {
     await openCommandCall?.[1]?.();
 
     const actions = (createOrShow.mock.calls.at(-1) as [unknown, unknown, { switchDataDir: (request: { targetDir: string; migrate: boolean }) => Promise<unknown> }])?.[2];
+    const syncInstancesBeforeSwitch = vi.mocked(LogSyncService).mock.instances.length;
 
     await actions.switchDataDir({ targetDir, migrate: true });
 
@@ -289,6 +296,20 @@ describe('activate', () => {
     expect(await readFile(join(targetDir, 'settings.json'), 'utf8')).toContain(targetDir);
     expect(await readdir(targetDir)).not.toContain('notes.txt');
     expect(syncUninstallDataDir).toHaveBeenCalledWith(targetDir);
+    expect(vi.mocked(LogSyncService).mock.instances).toHaveLength(syncInstancesBeforeSwitch + 1);
+    expect((vi.mocked(LogSyncService).mock.instances[syncInstancesBeforeSwitch - 1] as any).stop).toHaveBeenCalledTimes(1);
+    expect((vi.mocked(LogSyncService).mock.instances[syncInstancesBeforeSwitch] as any).start).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the JSONL repository without a SQLite migration step', async () => {
+    const dataDir = '/tmp/prompter-stored';
+
+    const { activate } = await import('../../src/extension');
+    const context = createTestContext({ storedDataDir: dataDir });
+
+    await activate(context as never);
+
+    expect(mockedCreate).toHaveBeenCalledWith(expect.any(Object));
   });
 
   it('prompts for reload on first install and stores the current version', async () => {
@@ -337,6 +358,7 @@ describe('activate', () => {
 
   it('shows a Chinese recovery message when activation fails during install', async () => {
     mockedCreate.mockRejectedValueOnce(new Error('corrupted cache'));
+    mockedCreate.mockRejectedValueOnce(new Error('corrupted cache'));
     currentLanguage = 'zh-cn';
 
     const { activate } = await import('../../src/extension');
@@ -350,6 +372,7 @@ describe('activate', () => {
   });
 
   it('shows an English recovery message when activation fails during install', async () => {
+    mockedCreate.mockRejectedValueOnce(new Error('corrupted cache'));
     mockedCreate.mockRejectedValueOnce(new Error('corrupted cache'));
     currentLanguage = 'en';
 

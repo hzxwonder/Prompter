@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ExtensionContext } from 'vscode';
 import { createInitialState, toLocalDateBucket } from '../../../src/shared/models';
 import { LogSyncService } from '../../../src/services/LogSyncService';
@@ -52,6 +55,8 @@ vi.mock('../../../src/services/LogParser', () => ({
       discoverTodayOrRunningEntries: vi.fn(() => []),
       discoverScanEntries: vi.fn(() => []),
       scanEntry: vi.fn(() => []),
+      setForbiddenPromptKeys: vi.fn(),
+      addForbiddenPromptKey: vi.fn(),
       applySessionScan: vi.fn((prompts) => ({ inserted: prompts, justCompletedSourceRefs: [], silentlyCompletedSourceRefs: [] }))
     };
   })
@@ -85,6 +90,79 @@ describe('LogSyncService', () => {
     expect((LogSyncService as any).resolveHistoryWorkerCount(16)).toBe(3);
     expect((LogSyncService as any).resolveHistoryWorkerCount(6)).toBe(3);
     expect((LogSyncService as any).resolveHistoryWorkerCount(2)).toBe(3);
+  });
+
+  it('reloads the repository when the cross-window sync token changes', async () => {
+    const state = createInitialState('2026-05-05T10:00:00.000Z');
+    const repository = {
+      getDataDir: vi.fn(() => '/tmp/missing-prompter-db'),
+      getSyncToken: vi.fn().mockResolvedValue('token-after'),
+      reload: vi.fn().mockResolvedValue(undefined),
+      getState: vi.fn().mockResolvedValue(state)
+    };
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const { PrompterPanel } = await import('../../../src/panel/PrompterPanel');
+
+    (service as any).externalDbDataDir = '/tmp/missing-prompter-db';
+    (service as any).observedSyncToken = 'token-before';
+    await (service as any).checkExternalDbChange();
+
+    expect(repository.reload).toHaveBeenCalledTimes(1);
+    expect(PrompterPanel.refresh).toHaveBeenCalledWith(repository);
+  });
+
+  it('reloads when the first cross-window sync token appears after startup', async () => {
+    const state = createInitialState('2026-05-05T10:00:00.000Z');
+    const repository = {
+      getDataDir: vi.fn(() => '/tmp/missing-prompter-db'),
+      getSyncToken: vi.fn().mockResolvedValue('first-token'),
+      reload: vi.fn().mockResolvedValue(undefined),
+      getState: vi.fn().mockResolvedValue(state)
+    };
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+
+    (service as any).externalDbDataDir = '/tmp/missing-prompter-db';
+    await (service as any).checkExternalDbChange();
+
+    expect(repository.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reload when the changed sync token was written by the same repository instance', async () => {
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    const repository = {
+      getDataDir: vi.fn(() => '/tmp/missing-prompter-db'),
+      getSyncToken: vi.fn().mockResolvedValue('repo-a:token-after'),
+      isOwnSyncToken: vi.fn((token: string | undefined) => token?.startsWith('repo-a:') ?? false),
+      reload: vi.fn().mockResolvedValue(undefined),
+      getState: vi.fn().mockResolvedValue(state)
+    };
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const { PrompterPanel } = await import('../../../src/panel/PrompterPanel');
+
+    (service as any).externalDbDataDir = '/tmp/missing-prompter-db';
+    (service as any).observedSyncToken = 'repo-a:token-before';
+    await (service as any).checkExternalDbChange();
+
+    expect(repository.reload).not.toHaveBeenCalled();
+    expect(PrompterPanel.refresh).not.toHaveBeenCalled();
+  });
+
+  it('does not reload from logs.db mtime changes without a sync token', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'prompter-sync-'));
+    await writeFile(join(dir, 'logs.db'), 'changed');
+    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    const repository = {
+      getDataDir: vi.fn(() => dir),
+      getSyncToken: vi.fn().mockResolvedValue(undefined),
+      reload: vi.fn().mockResolvedValue(undefined),
+      getState: vi.fn().mockResolvedValue(state)
+    };
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+
+    (service as any).externalDbDataDir = dir;
+    await (service as any).checkExternalDbChange();
+
+    expect(repository.reload).not.toHaveBeenCalled();
   });
 
   it('backfills parsed prompts that exist in logs-state but are missing cards', async () => {
@@ -129,6 +207,36 @@ describe('LogSyncService', () => {
       '2026-04-08T10:01:00.000Z',
       { justCompleted: false }
     );
+  });
+
+  it('does not backfill a parsed prompt after the repository has forbidden it', async () => {
+    const state = createInitialState('2026-05-05T10:00:00.000Z');
+    const repository = {
+      getState: vi.fn().mockResolvedValue(state),
+      getForbiddenPromptKeys: vi.fn(() => ['codex:session-1:turn-1']),
+      saveImportedCard: vi.fn().mockResolvedValue({ id: 'resurrected-card' }),
+      markCardCompletedFromLog: vi.fn().mockResolvedValue(undefined)
+    };
+
+    const service = new LogSyncService(repository as never, { extensionPath: '/tmp/ext' } as ExtensionContext);
+    const parser = (service as any).parser;
+    parser.getAllPrompts.mockReturnValue([
+      {
+        source: 'codex',
+        sessionId: 'session-1',
+        sourceRef: 'session-1:turn-1',
+        project: 'session-1',
+        userInput: 'Deleted prompt should stay deleted.',
+        createdAt: '2026-05-05T09:59:00.000Z',
+        status: 'completed',
+        completedAt: '2026-05-05T10:01:00.000Z'
+      }
+    ]);
+
+    await (service as any).reconcileMissingParsedPromptCards();
+
+    expect(repository.saveImportedCard).not.toHaveBeenCalled();
+    expect(parser.addForbiddenPromptKey).toHaveBeenCalledWith('codex:session-1:turn-1');
   });
 
   it('sends completion notifications through PrompterPanel.showToast instead of host info messages', async () => {
@@ -1018,8 +1126,8 @@ describe('LogSyncService', () => {
           id: 'codex:/tmp/old.jsonl',
           sourceType: 'codex',
           filePath: '/tmp/old.jsonl',
-          dateBucket: '2026-04-07',
-          lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
+          dateBucket: '2026-05-04',
+          lastModifiedMs: Date.parse('2026-05-04T10:00:00.000Z')
         }
       ],
       completedEntries: []
@@ -1111,8 +1219,8 @@ describe('LogSyncService', () => {
           id: 'codex:/tmp/history.jsonl',
           sourceType: 'codex',
           filePath: '/tmp/history.jsonl',
-          dateBucket: '2026-04-07',
-          lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
+          dateBucket: '2026-05-04',
+          lastModifiedMs: Date.parse('2026-05-04T10:00:00.000Z')
         }
       ],
       completedEntries: []
@@ -1258,8 +1366,8 @@ describe('LogSyncService', () => {
           id: 'codex:/tmp/old-2.jsonl',
           sourceType: 'codex',
           filePath: '/tmp/old-2.jsonl',
-          dateBucket: '2026-04-06',
-          lastModifiedMs: Date.parse('2026-04-06T10:00:00.000Z')
+          dateBucket: '2026-05-03',
+          lastModifiedMs: Date.parse('2026-05-03T10:00:00.000Z')
         }
       ],
       completedEntries: []
@@ -1322,6 +1430,8 @@ describe('LogSyncService', () => {
   });
 
   it('skips history entries older than 30 days when preparing backfill', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-08T10:00:00.000Z'));
     const state = createInitialState('2026-04-08T10:00:00.000Z');
     const repositoryState = structuredClone(state);
     const repository = {
@@ -1353,17 +1463,21 @@ describe('LogSyncService', () => {
       }
     ]);
 
-    await (service as any).prepareHistoryBackfill();
+    try {
+      await (service as any).prepareHistoryBackfill();
 
-    expect(repositoryState.historyImport.pendingEntries).toEqual([
-      {
-        id: 'codex:/tmp/recent.jsonl',
-        sourceType: 'codex',
-        filePath: '/tmp/recent.jsonl',
-        dateBucket: '2026-04-01',
-        lastModifiedMs: Date.parse('2026-04-01T10:00:00.000Z')
-      }
-    ]);
+      expect(repositoryState.historyImport.pendingEntries).toEqual([
+        {
+          id: 'codex:/tmp/recent.jsonl',
+          sourceType: 'codex',
+          filePath: '/tmp/recent.jsonl',
+          dateBucket: '2026-04-01',
+          lastModifiedMs: Date.parse('2026-04-01T10:00:00.000Z')
+        }
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('queues recently modified old sessions for history backfill even when their session bucket is older than 30 days', async () => {
@@ -1663,8 +1777,8 @@ describe('LogSyncService', () => {
           id: 'codex:/tmp/old-2.jsonl',
           sourceType: 'codex',
           filePath: '/tmp/old-2.jsonl',
-          dateBucket: '2026-04-06',
-          lastModifiedMs: Date.parse('2026-04-06T10:00:00.000Z')
+          dateBucket: '2026-05-03',
+          lastModifiedMs: Date.parse('2026-05-03T10:00:00.000Z')
         }
       ],
       completedEntries: [],
@@ -1730,7 +1844,7 @@ describe('LogSyncService', () => {
   });
 
   it('pauses history backfill and preserves remaining pending entries for resume', async () => {
-    const state = createInitialState('2026-04-08T10:00:00.000Z');
+    const state = createInitialState('2026-05-05T10:00:00.000Z');
     state.historyImport = {
       ...state.historyImport,
       scope: 'history-backfill',
@@ -1741,29 +1855,29 @@ describe('LogSyncService', () => {
           id: 'codex:/tmp/pending-1.jsonl',
           sourceType: 'codex',
           filePath: '/tmp/pending-1.jsonl',
-          dateBucket: '2026-04-07',
-          lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
+          dateBucket: '2026-05-04',
+          lastModifiedMs: Date.parse('2026-05-04T10:00:00.000Z')
         },
         {
           id: 'codex:/tmp/pending-2.jsonl',
           sourceType: 'codex',
           filePath: '/tmp/pending-2.jsonl',
-          dateBucket: '2026-04-06',
-          lastModifiedMs: Date.parse('2026-04-06T10:00:00.000Z')
+          dateBucket: '2026-05-03',
+          lastModifiedMs: Date.parse('2026-05-03T10:00:00.000Z')
         },
         {
           id: 'codex:/tmp/pending-3.jsonl',
           sourceType: 'codex',
           filePath: '/tmp/pending-3.jsonl',
-          dateBucket: '2026-04-05',
-          lastModifiedMs: Date.parse('2026-04-05T10:00:00.000Z')
+          dateBucket: '2026-05-02',
+          lastModifiedMs: Date.parse('2026-05-02T10:00:00.000Z')
         },
         {
           id: 'codex:/tmp/pending-4.jsonl',
           sourceType: 'codex',
           filePath: '/tmp/pending-4.jsonl',
-          dateBucket: '2026-04-04',
-          lastModifiedMs: Date.parse('2026-04-04T10:00:00.000Z')
+          dateBucket: '2026-05-01',
+          lastModifiedMs: Date.parse('2026-05-01T10:00:00.000Z')
         }
       ],
       completedEntries: []
@@ -1798,29 +1912,29 @@ describe('LogSyncService', () => {
         source: 'codex',
         sessionId: 'pending-1',
         path: '/tmp/pending-1.jsonl',
-        dateBucket: '2026-04-07',
-        lastModifiedMs: Date.parse('2026-04-07T10:00:00.000Z')
+        dateBucket: '2026-05-04',
+        lastModifiedMs: Date.parse('2026-05-04T10:00:00.000Z')
       },
       {
         source: 'codex',
         sessionId: 'pending-2',
         path: '/tmp/pending-2.jsonl',
-        dateBucket: '2026-04-06',
-        lastModifiedMs: Date.parse('2026-04-06T10:00:00.000Z')
+        dateBucket: '2026-05-03',
+        lastModifiedMs: Date.parse('2026-05-03T10:00:00.000Z')
       },
       {
         source: 'codex',
         sessionId: 'pending-3',
         path: '/tmp/pending-3.jsonl',
-        dateBucket: '2026-04-05',
-        lastModifiedMs: Date.parse('2026-04-05T10:00:00.000Z')
+        dateBucket: '2026-05-02',
+        lastModifiedMs: Date.parse('2026-05-02T10:00:00.000Z')
       },
       {
         source: 'codex',
         sessionId: 'pending-4',
         path: '/tmp/pending-4.jsonl',
-        dateBucket: '2026-04-04',
-        lastModifiedMs: Date.parse('2026-04-04T10:00:00.000Z')
+        dateBucket: '2026-05-01',
+        lastModifiedMs: Date.parse('2026-05-01T10:00:00.000Z')
       }
     ]);
     parser.getRunningSessionsSnapshot = vi.fn(() => new Set<string>());
@@ -1853,8 +1967,8 @@ describe('LogSyncService', () => {
         id: 'codex:/tmp/pending-4.jsonl',
         sourceType: 'codex',
         filePath: '/tmp/pending-4.jsonl',
-        dateBucket: '2026-04-04',
-        lastModifiedMs: Date.parse('2026-04-04T10:00:00.000Z')
+        dateBucket: '2026-05-01',
+        lastModifiedMs: Date.parse('2026-05-01T10:00:00.000Z')
       }
     ]);
   });

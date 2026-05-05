@@ -3,8 +3,10 @@ webview/src/**
 tests/**
 scripts/**
 node_modules/**
+!node_modules/
 dist/**/*.map
 .gitignore
+.github/
 esbuild.config.mjs
 tsconfig.json
 package-lock.json

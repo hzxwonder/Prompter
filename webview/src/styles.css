@@ -1516,6 +1516,12 @@ select {
   pointer-events: none;
   white-space: nowrap;
   box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+  max-width: min(220px, calc(100vw - 16px));
+}
+
+.heatmap-tooltip.heatmap-tooltip--fixed {
+  position: fixed;
+  z-index: 9999;
 }
 
 .heatmap-tooltip-row {
@@ -1939,7 +1945,6 @@ select {
 }
 
 @media (max-width: 768px) {
-  .workspace-lanes,
   .history-heatmap-grid,
   .settings-grid,
   .settings-log-grid {
@@ -1989,10 +1994,6 @@ select {
 
   .content {
     padding: 0.75rem;
-  }
-
-  .workspace-lanes {
-    grid-template-columns: 1fr;
   }
 
   .prompt-lane {

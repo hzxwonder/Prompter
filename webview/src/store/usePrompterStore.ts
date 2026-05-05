@@ -11,6 +11,7 @@ import type { PrompterToastMessage } from '../../../src/shared/messages';
 import {
   createInitialStoreState,
   createPrompterStoreReducer,
+  type UndoEntry,
   type WorkspaceDraft
 } from './prompterReducer';
 
@@ -49,8 +50,12 @@ export function usePrompterStore(initialState: PrompterState) {
     dispatch({ type: 'workspace:insertImport', payload: { text, fileRefs, insertAt } });
   }, []);
 
+  const pushUndo = useCallback((entry: UndoEntry) => {
+    dispatch({ type: 'workspace:pushUndo', payload: entry });
+  }, []);
+
   const undoImport = useCallback(() => {
-    dispatch({ type: 'workspace:undoImport' });
+    dispatch({ type: 'workspace:undo' });
   }, []);
 
   const markDraftSaved = useCallback((card: PromptCard, state: PrompterState) => {
@@ -99,6 +104,7 @@ export function usePrompterStore(initialState: PrompterState) {
       updateSettings,
       updateWorkspaceDraft,
       insertImportedText,
+      pushUndo,
       undoImport,
       markDraftSaved,
       moveCard,
@@ -111,6 +117,7 @@ export function usePrompterStore(initialState: PrompterState) {
     }),
     [
       insertImportedText,
+      pushUndo,
       undoImport,
       acknowledgeCompletion,
       deleteCard,

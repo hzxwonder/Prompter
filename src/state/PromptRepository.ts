@@ -23,6 +23,9 @@ import {
 } from '../shared/promptSanitization';
 import { log } from '../logger';
 import { FileStore } from './FileStore';
+import type { DataDirStore } from './DataDirStore';
+
+export type StorageBackend = FileStore | DataDirStore;
 
 // ─── Group colour palette ────────────────────────────────────────────────────
 // 16 carefully chosen colours that look good in both dark and light themes.
@@ -548,14 +551,24 @@ export class PromptRepository {
     return repo;
   }
 
+  static async createWithStore(
+    store: StorageBackend,
+    now: () => string = () => new Date().toISOString()
+  ): Promise<PromptRepository> {
+    const repo = new PromptRepository(store, now);
+    await repo.load();
+    return repo;
+  }
+
   private state: PrompterState;
   private fullCards: PromptCard[] = [];
   private sessionGroups: SessionGroupMap = {};
   private forbiddenPrompts: ForbiddenPromptState = { dateBucket: '', promptKeys: [] };
   private persistLock: Promise<void> = Promise.resolve();
+  private readonly syncInstanceId = randomUUID();
 
   private constructor(
-    private readonly store: FileStore,
+    private readonly store: StorageBackend,
     private readonly now: () => string
   ) {
     this.state = createInitialState(this.now());
@@ -620,9 +633,16 @@ export class PromptRepository {
       }
     }
 
+    const forbiddenPromptKeys = new Set(this.forbiddenPrompts.promptKeys);
     const migratedCards = (cards as PromptCard[])
       .filter((c) => {
         const sanitizedContent = c.sourceType === 'manual' ? c.content : sanitizeImportedPromptContent(c.content);
+        const forbiddenPromptKey = buildForbiddenPromptKey(c.sourceType, c.sourceRef);
+
+        if (forbiddenPromptKey && forbiddenPromptKeys.has(forbiddenPromptKey)) {
+          needsPersist = true;
+          return false;
+        }
 
         // 移除内容完全是系统自动消息或工具注入技能正文的卡片
         if (c.sourceType !== 'manual' && shouldDiscardImportedPromptContent(c.content)) {
@@ -716,6 +736,27 @@ export class PromptRepository {
     return structuredClone(this.state);
   }
 
+  /**
+   * Re-read all state from the underlying store. Used when another VS Code
+   * window writes to the shared data directory so this window catches up.
+   */
+  async reload(): Promise<void> {
+    await this.flushPersist();
+    await this.load();
+  }
+
+  async getSyncToken(): Promise<string | undefined> {
+    return this.store.getSyncToken();
+  }
+
+  isOwnSyncToken(token: string | undefined): boolean {
+    return Boolean(token?.startsWith(`${this.syncInstanceId}:`));
+  }
+
+  getDataDir(): string {
+    return this.store.getDataDir();
+  }
+
   async setHistoryImport(historyImport: Partial<PrompterState['historyImport']>): Promise<void> {
     this.state = {
       ...this.state,
@@ -727,7 +768,7 @@ export class PromptRepository {
         completedEntryMtims: historyImport.completedEntryMtims ?? this.state.historyImport.completedEntryMtims
       }
     };
-    await this.persistHistoryImport();
+    await this.runWithPersistLock(() => this.persistHistoryImport());
   }
 
   async saveDraft(input: SaveDraftInput): Promise<PromptCard> {
@@ -754,7 +795,10 @@ export class PromptRepository {
 
     this.fullCards.unshift(card);
     this.syncCardsProjection();
-    await this.persist();
+    // Fire-and-forget persist so the webview gets an immediate response.
+    // persistLock preserves ordering with concurrent imports/syncs; errors are
+    // already swallowed by runWithPersistLock, matching prior behavior.
+    void this.persist();
     return card;
   }
 
@@ -1202,10 +1246,6 @@ export class PromptRepository {
 
   async deleteCard(cardId: string): Promise<{ forbiddenPromptKey?: string; sourceType?: PromptSourceType; sourceRef?: string }> {
     const target = this.fullCards.find((c) => c.id === cardId);
-    this.fullCards = this.fullCards.filter((c) => c.id !== cardId);
-    this.syncCardsProjection();
-    await this.persist();
-
     let forbiddenPromptKey: string | undefined;
     if (target) {
       forbiddenPromptKey = buildForbiddenPromptKey(target.sourceType, target.sourceRef);
@@ -1213,6 +1253,11 @@ export class PromptRepository {
         await this.addForbiddenPromptKey(forbiddenPromptKey);
       }
     }
+
+    this.fullCards = this.fullCards.filter((c) => c.id !== cardId);
+    this.syncCardsProjection();
+    await this.persist();
+
     return {
       forbiddenPromptKey,
       sourceType: target?.sourceType,
@@ -1258,10 +1303,17 @@ export class PromptRepository {
     await this.store.writeJson('history-import.json', this.state.historyImport);
   }
 
+  private async runWithPersistLock(work: () => Promise<void>): Promise<void> {
+    this.persistLock = this.persistLock.then(() => work()).catch(() => {});
+    await this.persistLock;
+  }
+
   async persist(): Promise<void> {
-    this.persistLock = this.persistLock
-      .then(() => this.persistInternal())
-      .catch(() => {});
+    await this.runWithPersistLock(() => this.persistInternal());
+  }
+
+  /** Wait for any in-flight or queued persist work to drain. */
+  async flushPersist(): Promise<void> {
     await this.persistLock;
   }
 
@@ -1277,6 +1329,7 @@ export class PromptRepository {
       this.store.writeJson('settings.json', this.state.settings),
       this.store.writeJson('session-groups.json', this.sessionGroups)
     ]);
+    await this.store.writeSyncToken(`${this.syncInstanceId}:${this.now()}:${randomUUID()}`);
   }
 
   async recoverCorruptedBackups(): Promise<{ recovered: number; files: string[] }> {

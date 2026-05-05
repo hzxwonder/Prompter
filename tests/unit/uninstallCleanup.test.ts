@@ -38,7 +38,9 @@ describe('uninstallCleanup', () => {
     const statePath = join(root, 'prompter-uninstall-state.json');
 
     await mkdir(dataDir, { recursive: true });
+    await mkdir(join(dataDir, 'logs', '2026', '05', '03'), { recursive: true });
     await writeFile(join(dataDir, 'cards.json'), '[]', 'utf8');
+    await writeFile(join(dataDir, 'logs', '2026', '05', '03', 'cards.jsonl'), '{}\n', 'utf8');
     await syncUninstallDataDir(dataDir, { statePath });
 
     const result = await runUninstallCleanup({ statePath, homeDir });
@@ -47,6 +49,7 @@ describe('uninstallCleanup', () => {
     expect(result.skipped).toBe(false);
     await expect(readFile(statePath, 'utf8')).rejects.toThrow();
     await expect(readFile(join(dataDir, 'cards.json'), 'utf8')).rejects.toThrow();
+    await expect(readFile(join(dataDir, 'logs', '2026', '05', '03', 'cards.jsonl'), 'utf8')).rejects.toThrow();
   });
 
   it('falls back to the default ~/prompter directory when no custom path is tracked', async () => {

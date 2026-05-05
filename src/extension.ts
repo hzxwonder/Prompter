@@ -8,15 +8,24 @@ import type { PrompterState } from './shared/models';
 import { formatFilePathImport, formatSelectionImport } from './services/PromptImportService';
 import { KeybindingService } from './services/KeybindingService';
 import { PromptRepository } from './state/PromptRepository';
+import { DataDirStore } from './state/DataDirStore';
 import { LogSyncService } from './services/LogSyncService';
-import { log, logError, showOutputChannel } from './logger';
+import { log, logError, logWarn, showOutputChannel } from './logger';
 import { syncUninstallDataDir } from './uninstall/uninstallCleanup';
 import { PrompterSidebarViewProvider } from './views/PrompterSidebarViewProvider';
 import { stripIdeTags } from './shared/promptSanitization';
 
 const DATA_DIR_KEY = 'prompter.dataDir';
 const RELOAD_PROMPT_VERSION_KEY = 'prompter.lastReloadPromptVersion';
-const REPOSITORY_FILE_NAMES = ['cards.json', 'modular-prompts.json', 'daily-stats.json', 'settings.json', 'session-groups.json'] as const;
+const REPOSITORY_FILE_NAMES = [
+  'cards.json',
+  'modular-prompts.json',
+  'daily-stats.json',
+  'settings.json',
+  'session-groups.json',
+  'history-import.json',
+  'today_forbidden.json'
+] as const;
 
 let logSyncService: LogSyncService | null = null;
 
@@ -32,15 +41,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     log(`Data directory: ${dataDir}`);
     await syncUninstallDataDir(dataDir);
 
-    let repository = await PromptRepository.create(dataDir);
-    log('Repository created successfully');
+    let repository = await createDataDirRepository(dataDir);
     const keybindingService = new KeybindingService(resolveUserKeybindingsPath(getVscodeAppName()));
 
     // 启动日志同步服务
-    log('Starting log sync service...');
-    logSyncService = new LogSyncService(repository, context);
-    logSyncService.start();
-    log('Log sync service started');
+    startLogSyncService(repository, context);
 
     const switchDataDir = async (request: { targetDir: string; migrate: boolean }) => {
       const currentDataDir = (await repository.getState()).settings.dataDir;
@@ -48,11 +53,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await migrateRepositoryFiles(currentDataDir, request.targetDir);
       }
 
-      const nextRepository = await PromptRepository.create(request.targetDir);
+      let nextRepository: PromptRepository;
+      try {
+        const nextStore = new DataDirStore(request.targetDir);
+        nextRepository = await PromptRepository.createWithStore(nextStore);
+      } catch {
+        nextRepository = await PromptRepository.create(request.targetDir);
+      }
       await nextRepository.updateSettings({ dataDir: request.targetDir });
       await context.globalState.update(DATA_DIR_KEY, request.targetDir);
       await syncUninstallDataDir(request.targetDir);
       repository = nextRepository;
+      startLogSyncService(repository, context);
       return nextRepository.getState();
     };
 
@@ -275,9 +287,26 @@ async function insertIntoComposer(
   });
 }
 
+async function createDataDirRepository(dataDir: string): Promise<PromptRepository> {
+  try {
+    const store = new DataDirStore(dataDir);
+    const repository = await PromptRepository.createWithStore(store);
+    log('Repository created with JSONL backend');
+    return repository;
+  } catch (error) {
+    logWarn(`Failed to create DataDirStore, falling back to JSON files: ${error}`);
+    return PromptRepository.create(dataDir);
+  }
+}
+
 async function migrateRepositoryFiles(sourceDir: string, targetDir: string): Promise<void> {
-  await Promise.all(
-    REPOSITORY_FILE_NAMES.map(async (fileName) => {
+  await Promise.all([
+    cp(join(sourceDir, 'logs'), join(targetDir, 'logs'), { recursive: true }).catch((error: unknown) => {
+      if (!isMissingFileError(error)) {
+        throw error;
+      }
+    }),
+    ...REPOSITORY_FILE_NAMES.map(async (fileName) => {
       try {
         await cp(join(sourceDir, fileName), join(targetDir, fileName));
       } catch (error: unknown) {
@@ -288,7 +317,7 @@ async function migrateRepositoryFiles(sourceDir: string, targetDir: string): Pro
         throw error;
       }
     })
-  );
+  ]);
 }
 
 function resolveDataDir(context: vscode.ExtensionContext): string {
@@ -324,7 +353,7 @@ function resolveUserKeybindingsPath(appName: string): string {
 }
 
 function getDefaultDataDir(): string {
-  return `${homedir()}/prompter`;
+  return `${homedir()}/.prompter`;
 }
 
 function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
@@ -338,4 +367,17 @@ export function deactivate(): void {
     logSyncService = null;
   }
   log('Extension deactivated');
+}
+
+function startLogSyncService(repository: PromptRepository, context: vscode.ExtensionContext): void {
+  if (logSyncService) {
+    log('Restarting log sync service...');
+    logSyncService.stop();
+  } else {
+    log('Starting log sync service...');
+  }
+
+  logSyncService = new LogSyncService(repository, context);
+  logSyncService.start();
+  log('Log sync service started');
 }

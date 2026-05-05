@@ -2,7 +2,7 @@
   "name": "prompter",
   "displayName": "Prompter",
   "description": "A prompt workspace for VS Code to collect context, reuse prompt blocks, and track AI prompt sessions.",
-  "version": "1.5.0",
+  "version": "2.0.0",
   "license": "MIT",
   "icon": "icon.png",
   "engines": {
@@ -131,6 +131,7 @@
   },
   "scripts": {
     "build": "node esbuild.config.mjs",
+    "package:vsix": "npm run build && npx @vscode/vsce package",
     "vscode:uninstall": "node ./dist/uninstall.js",
     "test:unit": "vitest run tests/unit",
     "test:webview": "vitest run tests/webview --environment=jsdom",
@@ -138,20 +139,22 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "react-markdown": "^10.0.0"
+    "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.0.0",
     "@testing-library/user-event": "^14.5.2",
     "@types/node": "^22.13.10",
+    "@types/proper-lockfile": "^4.1.4",
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",
     "@types/vscode": "^1.98.0",
     "esbuild": "^0.25.0",
     "jsdom": "^26.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.0.0",
     "typescript": "^5.9.3",
     "vitest": "^3.0.8"
   }

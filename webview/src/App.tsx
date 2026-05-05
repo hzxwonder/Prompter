@@ -42,6 +42,7 @@ export function App({
     updateSettings,
     updateWorkspaceDraft,
     insertImportedText,
+    pushUndo,
     undoImport,
     markDraftSaved,
     moveCard,
@@ -172,7 +173,8 @@ export function App({
             onManualSubmit={() => {
               shouldCopyAfterManualSaveRef.current = true;
             }}
-            onUndoImport={undoImport}
+            onUndo={undoImport}
+            onPushUndo={pushUndo}
             lastSavedCardId={lastSavedCardId}
           />
         )}

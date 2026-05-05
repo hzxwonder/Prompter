@@ -12,7 +12,7 @@ interface UninstallCleanupOptions {
 }
 
 export function getDefaultDataDir(homeDir = homedir()): string {
-  return join(homeDir, 'prompter');
+  return join(homeDir, '.prompter');
 }
 
 export function getUninstallStatePath(homeDir = homedir()): string {

@@ -267,6 +267,7 @@ describe('App shell', () => {
     expect(screen.queryByText('拖拽至此删除')).not.toBeInTheDocument();
 
     await user.click(screen.getAllByRole('button', { name: '删除 prompt' })[0]!);
+    await user.click(screen.getByRole('button', { name: '确认删除' }));
 
     expect(vscodeApi.postMessage).toHaveBeenCalledWith({
       type: 'card:delete',

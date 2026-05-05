@@ -13,11 +13,15 @@ function groupColor(name: string): string {
   return GROUP_COLORS[hash % GROUP_COLORS.length];
 }
 
-export interface ImportUndoEntry {
+export interface UndoEntry {
   content: string;
   fileRefs: FileRef[];
   cursorIndex?: number;
 }
+
+// Cap of how many edit checkpoints we retain. Enough to cover a long session
+// without blowing up memory if the user pastes large blocks.
+const UNDO_STACK_LIMIT = 50;
 
 export interface WorkspaceDraft {
   title: string;
@@ -26,7 +30,7 @@ export interface WorkspaceDraft {
   editingCardId?: string;
   editingCardStatus?: PromptStatus;
   cursorIndex?: number;
-  importUndoStack?: ImportUndoEntry[];
+  undoStack?: UndoEntry[];
 }
 
 type PrompterAction =
@@ -38,7 +42,8 @@ type PrompterAction =
   | { type: 'settings:update'; payload: Partial<PrompterSettings> }
   | { type: 'workspace:draftChanged'; payload: Partial<WorkspaceDraft> }
   | { type: 'workspace:insertImport'; payload: { text: string; fileRefs?: FileRef[]; insertAt?: number } }
-  | { type: 'workspace:undoImport' }
+  | { type: 'workspace:pushUndo'; payload: UndoEntry }
+  | { type: 'workspace:undo' }
   | { type: 'workspace:draftSaved'; payload: { card: PromptCard; state: PrompterState } }
   | { type: 'card:move'; payload: { cardId: string; nextStatus: PromptStatus } }
   | { type: 'card:delete'; payload: { cardId: string } }
@@ -161,15 +166,34 @@ function prompterReducer(store: PrompterStoreState, action: PrompterAction): Pro
           }
         }
       };
-    case 'workspace:draftChanged': {
-      const contentChanged = action.payload.content !== undefined
-        && action.payload.content !== store.workspaceDraft.content;
+    case 'workspace:draftChanged':
       return {
         ...store,
         workspaceDraft: {
           ...store.workspaceDraft,
-          ...action.payload,
-          ...(contentChanged ? { importUndoStack: [] } : {})
+          ...action.payload
+        }
+      };
+    case 'workspace:pushUndo': {
+      const stack = store.workspaceDraft.undoStack ?? [];
+      // Skip pushing identical consecutive snapshots (e.g. compositionend
+      // firing right after Enter on the same content).
+      const last = stack[stack.length - 1];
+      if (last
+        && last.content === action.payload.content
+        && last.cursorIndex === action.payload.cursorIndex
+      ) {
+        return store;
+      }
+      const appended = [...stack, action.payload];
+      const trimmed = appended.length > UNDO_STACK_LIMIT
+        ? appended.slice(appended.length - UNDO_STACK_LIMIT)
+        : appended;
+      return {
+        ...store,
+        workspaceDraft: {
+          ...store.workspaceDraft,
+          undoStack: trimmed
         }
       };
     }
@@ -205,8 +229,8 @@ function prompterReducer(store: PrompterStoreState, action: PrompterAction): Pro
         }
       }
 
-      const priorStack = store.workspaceDraft.importUndoStack ?? [];
-      const nextStack: ImportUndoEntry[] = [
+      const priorStack = store.workspaceDraft.undoStack ?? [];
+      const appended: UndoEntry[] = [
         ...priorStack,
         {
           content: current,
@@ -214,6 +238,9 @@ function prompterReducer(store: PrompterStoreState, action: PrompterAction): Pro
           cursorIndex: store.workspaceDraft.cursorIndex
         }
       ];
+      const nextStack = appended.length > UNDO_STACK_LIMIT
+        ? appended.slice(appended.length - UNDO_STACK_LIMIT)
+        : appended;
 
       return {
         ...store,
@@ -222,12 +249,12 @@ function prompterReducer(store: PrompterStoreState, action: PrompterAction): Pro
           content: nextContent,
           fileRefs: mergedRefs,
           cursorIndex: nextCursorIndex,
-          importUndoStack: nextStack
+          undoStack: nextStack
         }
       };
     }
-    case 'workspace:undoImport': {
-      const stack = store.workspaceDraft.importUndoStack ?? [];
+    case 'workspace:undo': {
+      const stack = store.workspaceDraft.undoStack ?? [];
       if (stack.length === 0) {
         return store;
       }
@@ -240,7 +267,7 @@ function prompterReducer(store: PrompterStoreState, action: PrompterAction): Pro
           content: previous.content,
           fileRefs: previous.fileRefs,
           cursorIndex: previous.cursorIndex,
-          importUndoStack: nextStack
+          undoStack: nextStack
         }
       };
     }

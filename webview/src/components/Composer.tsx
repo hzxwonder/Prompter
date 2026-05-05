@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type Ref } from 'react';
-import type { ChangeEvent, DragEvent, KeyboardEvent } from 'react';
+import type { ChangeEvent, DragEvent, FocusEvent, KeyboardEvent } from 'react';
 import type { PrompterSettings } from '../../../src/shared/models';
 import { getLocaleText } from '../i18n';
-import type { WorkspaceDraft } from '../store/prompterReducer';
+import type { UndoEntry, WorkspaceDraft } from '../store/prompterReducer';
+
+const IDLE_SNAPSHOT_MS = 800;
 
 function NewPageIcon() {
   return (
@@ -39,8 +41,9 @@ export function Composer({
   onFileDrop,
   onSubmit,
   onNewDraft,
-  onUndoImport,
-  canUndoImport = false,
+  onUndo,
+  onPushUndo,
+  canUndo = false,
   isDroppingFiles = false,
   sectionRef,
   textareaRef: externalTextareaRef
@@ -53,8 +56,9 @@ export function Composer({
   onFileDrop?: (event: DragEvent<HTMLTextAreaElement>) => void;
   onSubmit?: () => void;
   onNewDraft?: () => void;
-  onUndoImport?: () => void;
-  canUndoImport?: boolean;
+  onUndo?: () => void;
+  onPushUndo?: (entry: UndoEntry) => void;
+  canUndo?: boolean;
   isDroppingFiles?: boolean;
   sectionRef?: Ref<HTMLElement>;
   textareaRef?: Ref<HTMLTextAreaElement>;
@@ -63,6 +67,77 @@ export function Composer({
   const [titleOpen, setTitleOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
+  // Composition + idle-debounce state for IME-aware undo snapshots.
+  // `committedRef` holds the content/cursor at the last "stable" boundary; on
+  // the next boundary (Enter, IME compositionend, blur, idle) we push that as
+  // the pre-edit snapshot before updating it to the current value.
+  const isComposingRef = useRef(false);
+  const committedRef = useRef<UndoEntry>({
+    content: draft.content,
+    fileRefs: draft.fileRefs,
+    cursorIndex: draft.cursorIndex
+  });
+  const draftRef = useRef(draft);
+  const idleTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+
+  const flushSnapshot = () => {
+    if (idleTimerRef.current !== null) {
+      window.clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+    const committed = committedRef.current;
+    const current = draftRef.current;
+    if (committed.content === current.content) {
+      return;
+    }
+    onPushUndo?.(committed);
+    committedRef.current = {
+      content: current.content,
+      fileRefs: current.fileRefs,
+      cursorIndex: current.cursorIndex
+    };
+  };
+
+  const scheduleIdleSnapshot = () => {
+    if (idleTimerRef.current !== null) {
+      window.clearTimeout(idleTimerRef.current);
+    }
+    idleTimerRef.current = window.setTimeout(() => {
+      idleTimerRef.current = null;
+      if (!isComposingRef.current) {
+        flushSnapshot();
+      }
+    }, IDLE_SNAPSHOT_MS);
+  };
+
+  // When an external action (import, undo, new draft) replaces the content,
+  // resync the committed reference so the next typed boundary doesn't push a
+  // stale snapshot.
+  const lastSeenContentRef = useRef(draft.content);
+  useEffect(() => {
+    if (draft.content !== lastSeenContentRef.current
+      && !isComposingRef.current
+      && draft.content !== committedRef.current.content) {
+      // Caller (reducer) already handled snapshot bookkeeping for imports/undo.
+      committedRef.current = {
+        content: draft.content,
+        fileRefs: draft.fileRefs,
+        cursorIndex: draft.cursorIndex
+      };
+    }
+    lastSeenContentRef.current = draft.content;
+  }, [draft.content, draft.fileRefs, draft.cursorIndex]);
+
+  useEffect(() => () => {
+    if (idleTimerRef.current !== null) {
+      window.clearTimeout(idleTimerRef.current);
+    }
+  }, []);
+
   const handleFieldChange =
     (field: keyof WorkspaceDraft) => (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       if (field === 'content') {
@@ -70,6 +145,11 @@ export function Composer({
           content: event.target.value,
           cursorIndex: (event.target as HTMLTextAreaElement).selectionStart ?? event.target.value.length
         });
+        // Snapshot only outside IME composition; inside composition we wait
+        // for compositionend so each pinyin sequence collapses into one step.
+        if (!isComposingRef.current) {
+          scheduleIdleSnapshot();
+        }
         return;
       }
 
@@ -77,18 +157,49 @@ export function Composer({
     };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Ctrl+Z / Cmd+Z always pops our unified undo stack. We override the
+    // browser's native textarea undo because the stack contains both imports
+    // and typed text — the user expects one consistent history.
+    const isUndoShortcut = (event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'z';
+    if (isUndoShortcut) {
+      if (canUndo && onUndo) {
+        event.preventDefault();
+        // Ensure pending edits are checkpointed before stepping back.
+        flushSnapshot();
+        onUndo();
+      }
+      return;
+    }
+
     if (event.ctrlKey && event.key === 'Enter') {
       event.preventDefault();
       onSubmit?.();
       return;
     }
 
-    // Ctrl+Z (or Cmd+Z on mac) undoes the last import — only when an import
-    // snapshot is available; otherwise let the browser handle native undo.
-    const isUndoShortcut = (event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'z';
-    if (isUndoShortcut && canUndoImport && onUndoImport) {
-      event.preventDefault();
-      onUndoImport();
+    // Plain Enter (no modifiers, not during IME) is an explicit edit boundary.
+    if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.shiftKey && !isComposingRef.current) {
+      flushSnapshot();
+    }
+  };
+
+  const handleCompositionStart = () => {
+    isComposingRef.current = true;
+    if (idleTimerRef.current !== null) {
+      window.clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+  };
+
+  const handleCompositionEnd = () => {
+    isComposingRef.current = false;
+    // The IME just committed text — checkpoint it as one undo step.
+    flushSnapshot();
+  };
+
+  const handleBlur = (_event: FocusEvent<HTMLTextAreaElement>) => {
+    if (!isComposingRef.current) {
+      flushSnapshot();
     }
   };
 
@@ -180,6 +291,9 @@ export function Composer({
           value={draft.content}
           onChange={handleFieldChange('content')}
           onKeyDown={handleKeyDown}
+          onCompositionStart={handleCompositionStart}
+          onCompositionEnd={handleCompositionEnd}
+          onBlur={handleBlur}
           onSelect={(event) => onChange({ cursorIndex: event.currentTarget.selectionStart ?? undefined })}
           onClick={(event) => onChange({ cursorIndex: event.currentTarget.selectionStart ?? undefined })}
           onKeyUp={(event) => onChange({ cursorIndex: event.currentTarget.selectionStart ?? undefined })}

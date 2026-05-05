@@ -200,7 +200,7 @@ export function createInitialState(nowIso: string, _platform?: string): Prompter
     historyImport: createInitialHistoryImportState(),
     selectedDate: toDateBucket(nowIso),
     settings: {
-      dataDir: '~/prompter',
+      dataDir: '~/.prompter',
       language: 'zh-CN',
       theme: 'system',
       defaultImportMode: 'absolute',

@@ -176,7 +176,8 @@ export function WorkspacePage({
   onAcknowledgeCompletion,
   onRenameGroup,
   onManualSubmit,
-  onUndoImport,
+  onUndo,
+  onPushUndo,
   lastSavedCardId: _lastSavedCardId
 }: {
   language?: PrompterSettings['language'];
@@ -188,7 +189,8 @@ export function WorkspacePage({
   onAcknowledgeCompletion: (cardId: string) => void;
   onRenameGroup: (previousName: string, nextName: string) => void;
   onManualSubmit: () => void;
-  onUndoImport?: () => void;
+  onUndo?: () => void;
+  onPushUndo?: (entry: { content: string; fileRefs: WorkspaceDraft['fileRefs']; cursorIndex?: number }) => void;
   lastSavedCardId?: string;
 }) {
   const [isDroppingFiles, setIsDroppingFiles] = useState(false);
@@ -332,8 +334,9 @@ export function WorkspacePage({
         onFileDrop={handleFileDrop}
         onSubmit={handleSubmit}
         onNewDraft={handleNewDraft}
-        onUndoImport={onUndoImport}
-        canUndoImport={(draft.importUndoStack?.length ?? 0) > 0}
+        onUndo={onUndo}
+        onPushUndo={onPushUndo}
+        canUndo={(draft.undoStack?.length ?? 0) > 0}
         isDroppingFiles={isDroppingFiles}
         sectionRef={composerSectionRef}
         textareaRef={composerTextareaRef}
